@@ -1,0 +1,25 @@
+name = "minimal"
+cpu = 1
+# gpu = "h200:4"  # Optional GPU type:count; use your cluster's GPU type
+image = "python:3.12-bookworm"
+editable = ["src"]
+readable = ["data"]
+executable = "executable"
+execute = "executable/train.py"
+fixed = "fixed"
+eval = "eval.py"
+outputs = "results"
+
+[locations]
+coding = "local"
+dev = "local"
+experiments = "local"  # This example requires local Slurm for caligo run
+
+[remote]
+
+[scheduler]
+type = "slurm"
+# partition = "your-partition"  # Omit to use the cluster default
+# setup = "module load apptainer"  # Optional site-specific batch setup
+time = "00:03:00"
+memory = "1G"
