@@ -11,7 +11,7 @@ from .common import CaligoError
 
 
 class Transport:
-    def __init__(self, host, python="python3"):
+    def __init__(self, host, python=None):
         if not host or host.startswith("-") or any(c.isspace() for c in host):
             raise CaligoError("Specify an SSH host alias in locations (or doctor --host)")
         self.host = host
@@ -31,7 +31,45 @@ class Transport:
             raise CaligoError(p.stderr.strip() or p.stdout.strip() or "Remote command failed")
         return p.stdout
 
+    def select_python(self):
+        # Probe before uploading or importing Caligo. This tiny script must be
+        # parseable by old system Pythons so they can report their version.
+        candidates = [self.python] if self.python is not None else [
+            "python3", "python3.14", "python3.13", "python3.12", "python3.11",
+        ]
+        probe = """import json, sys
+if sys.version_info < (3, 11):
+    sys.stderr.write('%s is Python %s; Caligo requires Python 3.11+\\n' % (sys.executable, sys.version.split()[0]))
+    sys.exit(1)
+print(json.dumps({'executable': sys.executable}))
+"""
+        command = (
+            "for candidate in " + shlex.join(candidates) + "; do\n"
+            '  if command -v "$candidate" >/dev/null 2>&1; then\n'
+            '    "$candidate" -c ' + shlex.quote(probe) + " && exit 0\n"
+            "  fi\ndone\nexit 1"
+        )
+        result = subprocess.run(self.ssh + [self.host, command], capture_output=True, text=True)
+        if result.returncode == 255:
+            raise CaligoError("SSH connection to %s failed: %s" % (self.host, result.stderr.strip()))
+        if result.returncode:
+            raise CaligoError(
+                "No usable Python 3.11+ on %s (tried %s). Install Python 3.11+ on that host "
+                "or set [remote].python to its executable in project.toml. "
+                "An explicit remote.python is used without fallback.\n%s"
+                % (self.host, ", ".join(candidates), result.stderr.strip())
+            )
+        try:
+            executable = json.loads(result.stdout)["executable"]
+            if not isinstance(executable, str) or not executable.startswith("/") or "\n" in executable:
+                raise ValueError("Expected an absolute interpreter path")
+        except (ValueError, KeyError, TypeError) as error:
+            raise CaligoError("Invalid Python probe response from " + self.host) from error
+        # Keep the selected interpreter for installation, RPC, shells and jobs.
+        self.python = executable
+
     def install(self):
+        self.select_python()
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "app"
             package = source / "caligo"

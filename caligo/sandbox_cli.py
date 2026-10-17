@@ -20,6 +20,7 @@ def main():
     create = commands.add_parser("create", help="Create and enter an attempt")
     create.add_argument("name")
     create.add_argument("--mode", required=True, choices=["supervisor", "user"])
+    create.add_argument("--addon", action="append", default=[], help="Enable a development tool (repeatable)")
     commands.add_parser("exec", help="Execute a command on dev").add_argument("argv", nargs=argparse.REMAINDER)
     commands.add_parser("run", help="Submit a frozen copy of this worktree").add_argument("script", nargs="?")
     for name in ("status", "logs", "cancel", "publish", "artifacts"):
@@ -28,6 +29,8 @@ def main():
         if name == "artifacts":
             command.add_argument("destination", nargs="?", default=".")
     args = parser.parse_args()
+    if args.action in {"create", "switch"} and os.environ.get("CALIGO_NESTED_SESSION"):
+        parser.error("Stop the editor and change attempts from the parent Caligo shell")
     if args.action == "exec" and args.argv[:1] == ["--"]:
         args.argv = args.argv[1:]
     try:

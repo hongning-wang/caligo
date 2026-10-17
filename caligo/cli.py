@@ -112,6 +112,8 @@ def parser():
             command.add_argument("name", help="Attempt name within this project")
         if name == "create":
             command.add_argument("--mode", required=True, choices=["supervisor", "user"])
+            from .addons import REGISTRY
+            command.add_argument("--addon", action="append", default=[], choices=REGISTRY, help="Enable a development tool (repeatable)")
         if name == "exec":
             command.add_argument("argv", nargs=argparse.REMAINDER)
         if name == "run":
@@ -142,7 +144,7 @@ def main():
         else:
             project = Project(find_project(args.project))
             if args.command == "create":
-                attempt = project.create(args.name, args.mode)
+                attempt = project.create(args.name, args.mode, addons=args.addon)
                 sys.exit(project.enter(attempt["name"]))
             if args.command == "switch":
                 sys.exit(project.enter(args.name))

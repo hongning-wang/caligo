@@ -20,7 +20,7 @@ class Endpoint:
             self.root = str(Path(root).resolve())
             self.controller = Controller(self.root, project)
         else:
-            self.transport = Transport(location, remote.get("python", "python3"))
+            self.transport = Transport(location, remote.get("python"))
             home = self.transport.install()
             self.root = remote.get("root", home + "/.local/share/caligo")
             if self.root.startswith("~/"):
@@ -35,7 +35,7 @@ class Endpoint:
         if action == "bootstrap":
             return c.bootstrap(values["archive"], values.get("development", False))
         if action == "create":
-            return c.create(values["mode"], values["name"])
+            return c.create(values["mode"], values["name"], values.get("addons", []))
         if action == "environment":
             return c.environment(values["environment"])
         if action == "snapshot":
@@ -123,9 +123,9 @@ class Workflow:
     def coding(self):
         return self.endpoint(self.spec["locations"]["coding"])
 
-    def create(self, archive, mode, name):
+    def create(self, archive, mode, name, addons=None):
         self.coding.upload("bootstrap", archive, development=True)
-        result = self.coding.rpc("create", mode=mode, name=name)
+        result = self.coding.rpc("create", mode=mode, name=name, addons=addons or [])
         result["location"] = self.spec["locations"]["coding"]
         return result
 
@@ -221,11 +221,11 @@ class Workflow:
             {"name": a["name"], "mode": a["mode"], "current": a["id"] == current}
             for a in state["attempts"]]}
 
-    def request_switch(self, name, mode=None):
+    def request_switch(self, name, mode=None, addons=None):
         if not self.project_manager:
             raise CaligoError("Attempt switching requires a project controller")
         if mode is not None:
-            attempt = self.project_manager.create(name, mode)
+            attempt = self.project_manager.create(name, mode, addons=addons)
         else:
             attempt = self.project_manager.find(name)
         self.pending_attempt = attempt["id"]

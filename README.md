@@ -13,7 +13,9 @@ source .venv/bin/activate
 npm install -g @anthropic-ai/sandbox-runtime@0.0.79
 ```
 
-Coding hosts need Python 3.11+ for the CLI (remote workers support 3.9+), Git, Bash, Node 22.12+, ripgrep, and Sandbox Runtime (`srt`). macOS uses its built-in `sandbox-exec`; Linux needs Bubblewrap and the dependencies reported by `srt`. macOS coding shells have been verified; Linux coding isolation has not yet been verified.
+Caligo requires Python 3.11+ on both client and remote hosts. Before deploying its controller, it checks the remote `python3`, then `python3.14` through `python3.11` on the SSH session's PATH, and pins the first compatible interpreter for that connection. Set `[remote].python` to an executable name or absolute path to choose it explicitly; an incompatible explicit choice fails without fallback. This selects Caligo's interpreter, not the Python used by your dev command or experiment image.
+
+Coding hosts also need Git, Bash, Node 22.12+, ripgrep, and Sandbox Runtime (`srt`). macOS uses its built-in `sandbox-exec`; Linux needs Bubblewrap and the dependencies reported by `srt`. macOS coding shells have been verified; Linux coding isolation has not yet been verified.
 
 Alternatively, install the same npm package under the active Python environment with `npm install --prefix "$VIRTUAL_ENV/caligo-tools" @anthropic-ai/sandbox-runtime@0.0.79`. Caligo also discovers that location. The local development install uses this option. Missing sandbox dependencies produce an error; Caligo does not fall back to an unrestricted shell.
 
@@ -36,8 +38,7 @@ caligo list
 # Project: dropout-study
 # * baseline  (user)
 
-# Edit files yourself, or start an installed coding agent:
-codex
+# Edit files with installed shell tools.
 
 caligo exec -- python3 check.py   # Explicit command on the configured dev host
 caligo run                      # Full scheduled experiment
@@ -52,6 +53,39 @@ exit
 `caligo list` marks the attempt belonging to this shell, even if another terminal has selected another attempt. Switching is handled by the outer project controller: the old coding shell exits and a new shell starts with the target attempt's access rules. Shell processes are not suspended or resumed; files persist. A new attempt starts from the initial project files, not another attempt's uncommitted edits.
 
 After leaving, `caligo switch baseline` reopens that attempt. To use another project, leave the coding shell and change into that project's directory. On the host, `--project /path/to/project.toml` can select the project explicitly. Host `exec` and `run` use that project's most recently selected attempt.
+
+## Optional development tools
+
+Select add-ons when creating an attempt. Install the tools on the coding host first; Caligo discovers their commands through `PATH` and reports missing dependencies before creating the attempt.
+
+```sh
+caligo create tools --mode user --addon codex --addon code-server
+# You are now in the coding shell. Run either tool normally:
+codex login --device-auth   # First use in this attempt
+codex
+# After leaving Codex:
+code-server                # Open its printed local URL
+# Or select the full attempt workspace explicitly:
+code-server "$CALIGO_WORKSPACE"
+```
+
+`create` always opens the coding shell. Add-ons prepare tools without launching them. Running `code-server` starts a browser editor: its backend, terminals, and agents all run inside the same SRT boundary. Human saves obey the same filesystem restrictions as agent commands. `codex` is the installed command, with a private persistent home for this attempt. Credentials and host sessions are not automatically imported.
+
+Close the editor server with Ctrl-C to return to the same coding shell. `caligo switch tools` reopens that shell with its saved add-ons. The editor defaults to loopback and an available port; ordinary code-server arguments work, such as `code-server --bind-addr 127.0.0.1:8080 .`. This preview supports local coding hosts. Stop the editor before changing attempts from the parent shell; in-editor `caligo exec` and `caligo run` remain associated with that editor's attempt.
+
+Optional tool locations and settings belong in the manifest before creating the project’s first attempt:
+
+```toml
+[addons.codex]
+# executable = "/path/to/codex"       # Default: discover codex on PATH
+# ca_certificate = "/path/to/ca.pem" # Default: environment or platform CA bundle
+
+[addons.code-server]
+# executable = "/path/to/code-server"
+# port = 8080                        # Default: choose an available loopback port
+```
+
+The Codex add-on supplies missing private-config defaults: approvals on request, no nested OS sandbox, and no shared background daemon. SRT enforces the outer restrictions even when Codex calls its own mode `danger-full-access`. Existing explicit Codex settings are preserved. Tool-specific setup lives in `caligo/addons.py`; the sandbox adapter applies the resulting paths and policy.
 
 ## Workspace boundaries
 
@@ -68,8 +102,6 @@ Only declared editable, readable, and executable folders exist in the attempt wo
 The coding shell and its child processes run under Sandbox Runtime. macOS enforces access restrictions rather than presenting a separate filesystem root. The goal is to protect neighboring attempts during ordinary coding, not defend against a hostile user. Standard installed tools remain usable; coding does not require a Docker image or VM. Shell network traffic goes through the runtime's proxies, with public destinations permitted.
 
 Each attempt has an independent Git repository containing only declared content, with no origin remote pointing to the source project. `GIT_DIR` and `GIT_WORK_TREE` make ordinary Git commands work inside its shell. Commits and pushes remain explicit. Git control files, the attempt's private home, and coding outputs live outside its workspace.
-
-An installed Codex CLI is available in the shell. Run `codex login --device-auth` to authenticate, then `codex`. Its per-attempt home persists across switching. Host credentials and sessions are not automatically imported.
 
 ## Project configuration
 
@@ -96,7 +128,7 @@ experiments = "cluster"
 
 [remote]
 # root = "/shared/path/caligo"
-# python = "python3"
+# python = "/path/to/python3.12"  # Optional explicit controller interpreter (3.11+)
 
 [scheduler]
 type = "slurm"

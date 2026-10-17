@@ -99,10 +99,12 @@ class Controller:
             evidence["sha256"] = h.hexdigest()
         return evidence
 
-    def create(self, mode, name):
+    def create(self, mode, name, addons=None):
         if mode not in {"user", "supervisor"}:
             raise CaligoError("mode must be user or supervisor")
         spec = self.spec
+        from .addons import validate_selection
+        addons = validate_selection(addons or [], spec, check_tools=True)
         env_id = identifier("attempt-")
         workspace = self.project / "worktrees" / env_id
         valid_id(name)
@@ -125,7 +127,7 @@ class Controller:
                         path.chmod(path.stat().st_mode & ~0o222)
             workspace.chmod(workspace.stat().st_mode & ~0o222)
         record = {"id": env_id, "mode": mode, "workspace": str(workspace), "branch": env_id, "created_at": now()}
-        record.update(name=name, branch=name, git_dir=str(git_dir))
+        record.update(name=name, branch=name, git_dir=str(git_dir), addons=addons)
         write_json(self.project / "attempts" / (env_id + ".json"), record)
         return record
 
@@ -460,7 +462,7 @@ def main():
             if action == "bootstrap":
                 result = controller.bootstrap(request["archive"], request.get("development", False))
             elif action == "create":
-                result = controller.create(request["mode"], request["name"])
+                result = controller.create(request["mode"], request["name"], request.get("addons", []))
             elif action == "snapshot":
                 result = controller.snapshot(request["environment"], request.get("script"))
             elif action == "receive":

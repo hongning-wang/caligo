@@ -39,9 +39,11 @@ def load(path):
         spec = tomllib.loads(path.read_text())
     except (OSError, tomllib.TOMLDecodeError) as e:
         raise CaligoError(str(e)) from e
-    allowed = {"name", "cpu", "gpu", "image", "editable", "readable", "executable", "outputs", "execute", "locations", "fixed", "eval", "inputs", "remote", "scheduler", "runtime"}
+    allowed = {"name", "cpu", "gpu", "image", "editable", "readable", "executable", "outputs", "execute", "locations", "fixed", "eval", "inputs", "remote", "scheduler", "runtime", "addons"}
     if set(spec) - allowed:
         raise CaligoError("Unknown manifest fields: " + ", ".join(sorted(set(spec) - allowed)))
+    from .addons import validate_settings
+    validate_settings(spec.get("addons", {}))
     for key in ("name", "cpu", "image", "editable", "readable", "executable", "outputs", "locations"):
         if key not in spec:
             raise CaligoError("Missing manifest field: " + key)
@@ -81,6 +83,10 @@ def load(path):
     spec.setdefault("remote", {})
     if not isinstance(spec["remote"], dict) or set(spec["remote"]) - {"root", "python"}:
         raise CaligoError("remote supports root and python; choose hosts explicitly in locations")
+    if "python" in spec["remote"]:
+        python = spec["remote"]["python"]
+        if not isinstance(python, str) or not python.strip() or python.startswith("-") or "\n" in python or "\0" in python:
+            raise CaligoError("remote.python must name a Python 3.11+ executable, not a shell command")
     spec.setdefault("scheduler", {})
     allowed_scheduler = {"type", "partition", "account", "time", "memory", "constraint", "qos", "setup"}
     if not isinstance(spec["scheduler"], dict) or set(spec["scheduler"]) - allowed_scheduler:

@@ -32,7 +32,6 @@ def launch(controller, attempt, argv, session_dir, variables):
     session_dir = Path(session_dir).resolve()
     home, temp = private / "home", session_dir / "tmp"
     home.mkdir(exist_ok=True)
-    (home / ".codex").mkdir(exist_ok=True)
     temp.mkdir(exist_ok=True)
     outputs = Path(variables["CALIGO_OUTPUTS"]).resolve()
     spec = controller.spec
@@ -49,19 +48,28 @@ def launch(controller, attempt, argv, session_dir, variables):
     for folder in os.environ.get("PATH", "").split(os.pathsep):
         if folder and Path(folder).is_dir() and Path(folder).resolve() not in workspace.parents:
             readable.append(Path(folder).resolve())
-    for executable in (sys.executable, node, shutil.which("codex")):
+    for executable in (sys.executable, node):
         if executable:
             readable.append(Path(executable).resolve().parent.parent)
+    shell = ["bash", "--noprofile", "--rcfile", str(session_dir / "bashrc")]
+    network = {"allowedDomains": [], "deniedDomains": [],
+               "allowUnixSockets": [str(session_dir), str(private), variables["CALIGO_SOCKET"]],
+               "allowAllUnixSockets": sys.platform != "darwin"}
+    context = dict(home=home, temp=temp, session_dir=session_dir, workspace=workspace,
+                   spec=spec, env=variables, readable=readable, network=network,
+                   shell=shell)
+    from .addons import prepare
+    prepare(attempt.get("addons", []), context)
     policy = {
         "filesystem": {
             "denyRead": ["/"],
-            "allowRead": sorted({str(p.resolve()) for p in readable}),
+            # macOS checks symlink paths as well as their destinations (e.g.
+            # /etc -> /private/etc). Keep both or ordinary config lookups fail.
+            "allowRead": sorted({str(q) for p in readable for q in (p.absolute(), p.resolve())}),
             "allowWrite": [str(workspace / area) for area in areas] + [str(private), str(outputs), str(temp)],
             "denyWrite": [],
         },
-        "network": {"allowedDomains": [], "deniedDomains": [],
-                    "allowUnixSockets": [str(session_dir / "control.sock"), variables["CALIGO_SOCKET"]],
-                    "allowAllUnixSockets": sys.platform != "darwin"},
+        "network": network,
         "allowPty": True,
     }
     settings = session_dir / "sandbox.json"
@@ -89,7 +97,8 @@ try {
   await SandboxManager.reset();
 }
 ''')
-    variables.update(HOME=str(home), TMPDIR=str(temp), CODEX_HOME=str(home / ".codex"),
+    variables.update(HOME=str(home), TMPDIR=str(temp),
+                     CLAUDE_CODE_TMPDIR=str(temp),
                      BASH_ENV=str(session_dir / "bashrc"), CALIGO_ATTEMPT=attempt["name"],
                      CALIGO_CLIENT=str(session_dir / "bin/caligo"), CALIGO_SOCKET=str(session_dir / "control.sock"))
     if sys.platform == "darwin":
@@ -104,6 +113,6 @@ try {
             variables.pop(key)
     variables["GIT_CONFIG_NOSYSTEM"] = "1"
     variables["GIT_ATTR_NOSYSTEM"] = "1"
-    command = argv or ["bash", "--noprofile", "--rcfile", str(session_dir / "bashrc")]
+    command = argv or shell
     return subprocess.call([node, str(runner), module.as_uri(), str(settings), shlex.join(command)],
                            cwd=workspace / spec["executable"], env=variables)

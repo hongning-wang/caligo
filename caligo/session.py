@@ -29,7 +29,7 @@ def session(controller, environment, agent, controls=True):
                             self.wfile.flush()
                     result = {"exit_code": controller.exec_command(environment, request["argv"], emit)}
                 elif action in {"switch", "create"}:
-                    result = controller.request_switch(request["name"], request.get("mode"))
+                    result = controller.request_switch(request["name"], request.get("mode"), request.get("addon"))
                 elif action == "run":
                     result = controller.submit(environment, request.get("script"), agent)
                 elif action == "list":

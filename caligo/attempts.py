@@ -28,12 +28,16 @@ class Project:
                 return attempt
         raise CaligoError("Unknown attempt in this project: " + name)
 
-    def create(self, name, mode):
+    def create(self, name, mode, addons=None):
         from .cli import prepare
         from .workflow import Workflow
         valid_id(name)
         with lock(self.directory / "state.lock"):
             spec = load(self.manifest)
+            from .addons import validate_selection
+            addons = validate_selection(addons or [], spec)
+            if "code-server" in addons and spec["locations"]["coding"] != "local":
+                raise CaligoError("The editor preview requires locations.coding = 'local'")
             state = self.read() if self.state_path.exists() else None
             if state and state["spec"] != spec:
                 raise CaligoError("Project configuration changed; use a separate project directory")
@@ -50,9 +54,9 @@ class Project:
                     with tarfile.open(archive, "w:gz") as tar:
                         for item in stage.iterdir():
                             tar.add(item, arcname=item.name)
-                    result = workflow.create(archive, mode, name=name)
+                    result = workflow.create(archive, mode, name=name, addons=addons)
             else:
-                result = workflow.coding.rpc("create", mode=mode, name=name)
+                result = workflow.coding.rpc("create", mode=mode, name=name, addons=addons)
                 result["location"] = spec["locations"]["coding"]
             state["attempts"].append(result)
             state["active_attempt"] = result["id"]

@@ -1,5 +1,25 @@
 # Verification
 
+## Development add-ons — October 17, 2026
+
+Verified on macOS with SRT 0.0.79, Codex CLI 0.163.0, and code-server 4.141.0:
+
+- Created `tools-demo` using `--addon codex --addon code-server`. Both selections persisted in the attempt records. Creation enters the coding shell; the saved add-ons remain available after switching. From that shell, bare `code-server` started on an automatically selected loopback port with its backend and terminal inside SRT.
+- Typed bare `codex` in the browser terminal and completed an interactive model turn that ran a shell command and read a demo file. A separate `codex exec` turn wrote `src/codex-demo.txt`. No Caligo-specific agent launcher or per-invocation flags were needed for interactive startup.
+- Opened that file in the browser, edited it, saved it, and verified its contents on disk. Creating a file in user-mode `data/` through the editor failed with EPERM. An add-on-enabled shell also denied reads of the original manifest, fixed setup, and a neighboring attempt, plus writes to read-only data and undeclared root files.
+- Startup fixes preserve `/etc` symlink aliases in read permissions, use a private temporary directory for editor sockets, allow the macOS FSEvents service, configure a verified CA bundle, and seed private Codex defaults to avoid nested Seatbelt and shared-daemon process inspection.
+- For this live demo only, the existing local Codex authentication cache was copied into the attempt's private Codex home without displaying its contents. Automatic credential import is not implemented. Fresh attempts require login; the fresh device-auth flow was not exercised.
+- `.venv/bin/python -m pytest -q`: **20 passed, 1 skipped**. Docker remains opt-in. Linux coding isolation and remote browser forwarding remain unverified; the editor preview explicitly requires a local coding host.
+
+## Remote Python preflight — October 16, 2026
+
+Caligo now requires Python 3.11+ on client and controller hosts. SSH startup probes interpreters before deploying the agent, selects a compatible default, and uses its absolute executable path for subsequent operations. Explicit `remote.python` settings are checked without fallback. The agent entrypoint also rejects unsupported Python before importing the controller.
+
+- `.venv/bin/python -m pytest -q`: **20 passed, 1 skipped**. New transport tests execute the real probe, installer, and zipapp RPC through a local SSH stand-in. They cover a simulated Python 3.6 default alongside a modern interpreter, unsupported/missing explicit choices, paths containing spaces, SSH failures, and invalid manifest settings. The Docker test remains opt-in and was skipped.
+- Live SSH against `orcd` found `/usr/bin/python3` at 3.6.8 and selected `/usr/bin/python3.12` at 3.12.14. Explicitly selecting the old `python3` produced the actionable version error before deployment.
+- Updated the installed CLI in `/opt/anaconda3`, then ran `caligo exec --project /Users/hongningwang/side-projects/testing/project.toml -- python3 -c 'print("hello")'`: the frozen dev copy ran remotely, printed `hello`, and returned zero. No project configuration change or scheduler allocation was needed. Existing shell controllers must be restarted to load the updated package.
+- Tool-access diagnosis in the existing attempt: `codex --version` succeeds, but `codex login status` fails while reading `/etc/codex/requirements.toml` with `Operation not permitted`; `code` is unavailable inside the sandbox, and its host launcher points into `/Applications/Visual Studio Code.app`. Full tool startup, authentication, and editor integration remain unimplemented and unverified; launching the binary alone is insufficient validation.
+
 ## Caligo named attempts — October 16, 2026
 
 The CLI/package is `caligo`, with `.caligo/` project state and `CALIGO_*` environment variables. Old command forms, the old package entrypoint, automatic dev-to-coding synchronization, and shared writable Git metadata have been removed. No state migration or compatibility aliases are implemented.
