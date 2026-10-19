@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "caligo"
-version = "0.1.0"
-description = "Isolated coding attempts, remote dev commands, and reproducible experiments"
+version = "0.2.0"
+description = "Human workspaces, persistent containerized agents, and reproducible experiments"
 requires-python = ">=3.11"
 dependencies = []
 
@@ -13,7 +13,15 @@ dependencies = []
 caligo = "caligo.cli:main"
 
 [tool.setuptools]
-packages = ["caligo"]
+packages = ["caligo", "caligo.web"]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+"caligo.web" = "ui"
+
+[tool.setuptools.package-data]
+caligo = ["Agent.Dockerfile"]
+"caligo.web" = ["out/**/*", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

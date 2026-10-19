@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
+import tarfile
 from datetime import datetime, timezone
 
 
@@ -23,11 +24,17 @@ def now():
 
 
 def identifier(prefix):
-    return prefix + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:10]
+    return (
+        prefix
+        + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-")
+        + uuid.uuid4().hex[:10]
+    )
 
 
 def valid_id(value):
-    if not isinstance(value, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}", value):
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}", value
+    ):
         raise CaligoError("Invalid identifier: %r" % value)
     return value
 
@@ -58,24 +65,45 @@ def lock(path, shared=False):
 
 
 def run(argv, **kwargs):
-    result = subprocess.run([str(x) for x in argv], capture_output=True, text=True, **kwargs)
+    result = subprocess.run(
+        [str(x) for x in argv], capture_output=True, text=True, **kwargs
+    )
     if result.returncode:
-        raise CaligoError("%s failed (%s): %s" % (argv[0], result.returncode, result.stderr.strip() or result.stdout.strip()))
+        raise CaligoError(
+            "%s failed (%s): %s"
+            % (
+                argv[0],
+                result.returncode,
+                result.stderr.strip() or result.stdout.strip(),
+            )
+        )
     return result.stdout.strip()
 
 
 def stream_command(argv, emit, **kwargs):
     """Stream both pipes without buffering an entire dev command's output."""
-    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, **kwargs) as process:
+    with subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **kwargs,
+    ) as process:
+
         def forward(pipe, channel):
             while True:
                 data = os.read(pipe.fileno(), 8192)
                 if not data:
                     break
                 emit(channel, data)
-        readers = [threading.Thread(target=forward, args=(pipe, channel), daemon=True)
-                   for pipe, channel in ((process.stdout, "stdout"), (process.stderr, "stderr"))]
+
+        readers = [
+            threading.Thread(target=forward, args=(pipe, channel), daemon=True)
+            for pipe, channel in (
+                (process.stdout, "stdout"),
+                (process.stderr, "stderr"),
+            )
+        ]
         for reader in readers:
             reader.start()
         for reader in readers:
@@ -92,9 +120,18 @@ def inventory(root):
     for p in sorted(root.rglob("*")):
         info = p.lstat()
         relative = p.relative_to(root).as_posix()
-        if p.name == ".git" or p.is_symlink() or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
-            raise CaligoError("Symlinks, nested .git, and special files are not supported: %s" % p)
-        record = {"mode": stat.S_IMODE(info.st_mode), "type": "dir" if p.is_dir() else "file"}
+        if (
+            p.name == ".git"
+            or p.is_symlink()
+            or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+        ):
+            raise CaligoError(
+                "Symlinks, nested .git, and special files are not supported: %s" % p
+            )
+        record = {
+            "mode": stat.S_IMODE(info.st_mode),
+            "type": "dir" if p.is_dir() else "file",
+        }
         if p.is_file():
             digest = hashlib.sha256()
             with p.open("rb") as f:
@@ -113,8 +150,45 @@ def copy_tree(source, target):
     before = inventory(source)
     shutil.copytree(source, target)
     if inventory(source) != before or inventory(target) != before:
-        raise CaligoError("Files changed while snapshotting %s; retry after edits finish" % source)
+        raise CaligoError(
+            "Files changed while snapshotting %s; retry after edits finish" % source
+        )
     return before
+
+
+def archive_records(path, output):
+    """Export regular evidence even if a failed run produced unsafe links."""
+    path = Path(path)
+
+    def metadata(name, info, directory=False):
+        member = tarfile.TarInfo(name)
+        member.type = tarfile.DIRTYPE if directory else tarfile.REGTYPE
+        member.size = 0 if directory else info.st_size
+        member.mode = stat.S_IMODE(info.st_mode)
+        member.mtime = info.st_mtime
+        member.uid, member.gid = info.st_uid, info.st_gid
+        return member
+
+    with tarfile.open(fileobj=output, mode="w|gz") as archive:
+        # Jobs can still be writing while evidence is downloaded. Traverse with
+        # directory descriptors and open without following links, including when
+        # a participant replaces an entry between listing and opening it.
+        for folder, _, files, directory_fd in os.fwalk(path, follow_symlinks=False):
+            name = (Path(path.name) / Path(folder).relative_to(path)).as_posix()
+            archive.addfile(metadata(name, os.fstat(directory_fd), directory=True))
+            for filename in sorted(files):
+                try:
+                    fd = os.open(
+                        filename,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=directory_fd,
+                    )
+                except OSError:
+                    continue
+                with os.fdopen(fd, "rb") as data:
+                    info = os.fstat(data.fileno())
+                    if stat.S_ISREG(info.st_mode):
+                        archive.addfile(metadata(name + "/" + filename, info), data)
 
 
 def is_bucket(value):
@@ -127,7 +201,9 @@ def rclone_path(value):
     if value.startswith("gs://"):
         return ":gcs:" + value[5:]
     if value.startswith("r2://"):
-        raise CaligoError("Use a configured rclone remote for R2, e.g. r2:bucket/prefix")
+        raise CaligoError(
+            "Use a configured rclone remote for R2, e.g. r2:bucket/prefix"
+        )
     return value
 
 

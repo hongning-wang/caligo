@@ -7,7 +7,7 @@ import tarfile
 import pytest
 
 from caligo import manifest, runtime, scheduler
-from caligo.cli import prepare
+from caligo.preparation import prepare
 from caligo.common import CaligoError, run
 from caligo.remote import Controller
 from caligo.session import session
@@ -35,14 +35,15 @@ def test_real_worktrees_and_no_fixed_history(project, tmp_path, monkeypatch):
     run(["git", "-C", str(project), "add", "."])
     run(["git", "-C", str(project), "-c", "user.name=Test", "-c", "user.email=test@test", "commit", "-m", "private source history"])
     c = bootstrap(project, tmp_path, monkeypatch)
-    a, b = c.create("supervisor", "setup"), c.create("user", "baseline")
+    a, b = c.create("human", "setup"), c.create("human", "baseline")
     wa, wb = Path(a["workspace"]), Path(b["workspace"])
-    assert {p.name for p in wa.iterdir()} == {"src", "data", "executable"}
+    assert all((wa / area).is_dir() for area in ("src", "data", "executable"))
     worktrees = run(c.git_command(a) + ["worktree", "list", "--porcelain"])
     assert str(wb) not in worktrees and worktrees.count("\nHEAD ") == 1
     assert a["git_dir"] != b["git_dir"]
     (wa / "src/model.py").write_text("modified")
-    (wa / "data/values.json").write_text("[]")
+    with pytest.raises(PermissionError):
+        (wa / "data/values.json").write_text("[]")
     assert (wb / "src/model.py").read_text() != "modified"
     assert (wb / "data/values.json").read_text() != "[]"
     assert not (wa / "fixed").exists()
@@ -53,7 +54,7 @@ def test_real_worktrees_and_no_fixed_history(project, tmp_path, monkeypatch):
 
 def test_freezes_dirty_ignored_files_and_default_override(project, tmp_path, monkeypatch):
     c = bootstrap(project, tmp_path, monkeypatch)
-    env = c.create("user", "baseline")
+    env = c.create("human", "baseline")
     work = Path(env["workspace"])
     (work / "src/model.py").write_text("dirty code")
     (work / "src/.gitignore").write_text("ignored.py\n")
@@ -65,11 +66,15 @@ def test_freezes_dirty_ignored_files_and_default_override(project, tmp_path, mon
     with session(c, env["id"], "/agent.pyz") as directory:
         first = json.loads(run([sys.executable, str(directory / "bin/caligo"), "run"],
                                env={**os.environ, "CALIGO_SOCKET": str(directory / "control.sock")}))
+        destination = tmp_path / 'downloaded-evidence'
+        run([sys.executable,str(directory/'bin/caligo'),'artifacts',first['id'],str(destination)],
+            env={**os.environ,'CALIGO_SOCKET':str(directory/'control.sock')})
+        assert (destination/first['id']/'inputs/data/values.json').stat().st_mode & 0o222 == 0
     second = c.submit(env["id"], "executable/other.py", "/agent.pyz")
     assert first["id"] != second["id"]
     assert first["script"] == "executable/train.py"
     assert second["script"] == "executable/other.py"
-    other = c.create("user", "other")
+    other = c.create("human", "other")
     c.submit(other["id"], None, "/agent.pyz")
     assert {item["id"] for item in c.list(env["id"])["runs"]} == {first["id"], second["id"]}
     assert first["worktree"] == str(work)
@@ -90,7 +95,7 @@ def test_failure_evidence_and_poll_error(project, tmp_path, monkeypatch, gpu):
         path = project / "project.toml"
         path.write_text(path.read_text().replace("cpu = 1", 'cpu = 1\ngpu = "' + gpu + '"'))
     c = bootstrap(project, tmp_path, monkeypatch)
-    env = c.create("user", "baseline")
+    env = c.create("human", "baseline")
     monkeypatch.setattr(scheduler, "submit", lambda *args: "42")
     result = c.submit(env["id"], None, "/agent.pyz")
     def command(*args, **kwargs):

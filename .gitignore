@@ -6,3 +6,9 @@ __pycache__/
 .research/
 dist/
 build/
+node_modules/
+.next/
+ui/out/
+*.tsbuildinfo
+ui/test-results/
+ui/playwright-report/

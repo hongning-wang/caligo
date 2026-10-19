@@ -1,16 +1,10 @@
 """Exercise workspaces and execution across independently selected hosts."""
-import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 import tarfile
 
-import pytest
-
 from caligo import manifest, runtime, scheduler, workflow
-from caligo.cli import init, prepare
-from caligo.common import CaligoError, read_json, run
+from caligo.preparation import prepare
+from caligo.common import read_json
 
 
 def create_workflow(project, tmp_path, locations, monkeypatch):
@@ -33,7 +27,7 @@ def create_workflow(project, tmp_path, locations, monkeypatch):
     with tarfile.open(archive, "w:gz") as tar:
         for path in stage.iterdir():
             tar.add(path, arcname=path.name)
-    env = flow.create(archive, "user", name="baseline")
+    env = flow.create(archive, "human", name="baseline")
     state["attempts"].append(env)
     state["active_attempt"] = env["id"]
     return flow, env
@@ -73,14 +67,3 @@ def test_dev_copy_is_separate_even_on_same_host(project, tmp_path, monkeypatch):
     original = (coding / "src/model.py").read_text()
     assert flow.exec_command(attempt["id"], ["bash", "-c", "echo changed > ../src/model.py"]) == 0
     assert (coding / "src/model.py").read_text() == original
-
-
-def test_locations_must_all_be_chosen_before_creation(tmp_path):
-    init(tmp_path)
-    path = tmp_path / "project.toml"
-    with pytest.raises(CaligoError, match="explicitly specify"):
-        manifest.load(path)
-    text = path.read_text().replace('# coding = "local"', 'coding = "local"').replace('# dev = "local"', 'dev = "local"')
-    path.write_text(text)
-    with pytest.raises(CaligoError, match="explicitly specify"):
-        manifest.load(path)

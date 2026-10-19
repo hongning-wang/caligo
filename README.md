@@ -1,8 +1,8 @@
 # Caligo
 
-A project contains **attempts**. Each attempt has its own persistent coding workspace and independent Git metadata. An attempt can submit many **runs**.
+Caligo runs experiments through **human** and **agent** attempts. Humans get an interactive environment with normal tools and credentials. Agents get a persistent containerized backend that streams output and accepts steering. Both modes preserve the project's write permissions.
 
-The project directory selects the project. `caligo create`, `caligo list`, and `caligo switch` manage attempts inside it.
+Projects contain attempts; attempts can submit many frozen runs. Agent attempts also have persistent conversation threads. Workspaces, conversation history, and run evidence survive viewer disconnects.
 
 ## Install
 
@@ -10,114 +10,160 @@ The project directory selects the project. `caligo create`, `caligo list`, and `
 uv venv --python 3.12
 uv pip install -e .
 source .venv/bin/activate
-npm install -g @anthropic-ai/sandbox-runtime@0.0.79
 ```
 
-Caligo requires Python 3.11+ on both client and remote hosts. Before deploying its controller, it checks the remote `python3`, then `python3.14` through `python3.11` on the SSH session's PATH, and pins the first compatible interpreter for that connection. Set `[remote].python` to an executable name or absolute path to choose it explicitly; an incompatible explicit choice fails without fallback. This selects Caligo's interpreter, not the Python used by your dev command or experiment image.
+Caligo requires Python 3.11+ on client and controller hosts, Git, and Bash. Human write protection uses macOS's built-in `sandbox-exec` or Linux Bubblewrap (`bwrap`). There is no unrestricted fallback when write enforcement is unavailable. Host tools, home directories, credentials, and networking otherwise remain available to human shells.
 
-Coding hosts also need Git, Bash, Node 22.12+, ripgrep, and Sandbox Runtime (`srt`). macOS uses its built-in `sandbox-exec`; Linux needs Bubblewrap and the dependencies reported by `srt`. macOS coding shells have been verified; Linux coding isolation has not yet been verified.
+Agent coding requires a running Docker daemon on the coding host. Build the supplied image there:
 
-Alternatively, install the same npm package under the active Python environment with `npm install --prefix "$VIRTUAL_ENV/caligo-tools" @anthropic-ai/sandbox-runtime@0.0.79`. Caligo also discovers that location. The local development install uses this option. Missing sandbox dependencies produce an error; Caligo does not fall back to an unrestricted shell.
+```sh
+docker build -t caligo-agent:local -f caligo/Agent.Dockerfile caligo
+```
 
-## Start a project and make attempts
+The image includes Python, Git, Codex, and the Claude Agent SDK. The host does not need either agent installed. Set `[agent].image` in the manifest. Custom images must provide the same tools; their backend versions must support the documented interfaces.
+
+Dev and experiment hosts need the declared execution runtime, Docker or Apptainer/Singularity. Experiments use Slurm. Requeueable dev commands also use Slurm.
+
+## Human attempts
 
 ```sh
 caligo init dropout-study
 cd dropout-study
-# Prepare your code/data and edit project.toml, including all three locations.
+# Prepare files and configure all three locations in project.toml.
 caligo validate
-caligo create baseline --mode user
+caligo create baseline --mode human
 ```
 
-`create` reads the current project's manifest, creates the named attempt from the project's initial declared files, and immediately enters its coding shell in the executable directory. It does not contact dev or submit an experiment. Attempt names must be unique within the project. Existing attempts are never overwritten.
-
-Inside the coding shell:
+Creation opens an interactive shell in the executable directory without allocating an experiment job. Inside it:
 
 ```sh
-caligo list
-# Project: dropout-study
-# * baseline  (user)
-
-# Edit files with installed shell tools.
-
-caligo exec -- python3 check.py   # Explicit command on the configured dev host
-caligo run                      # Full scheduled experiment
-
-caligo create higher-dropout --mode user
-# Leaves baseline's shell and enters the new attempt.
+git status
+# Edit code with installed tools.
+caligo exec -- python3 check.py
+caligo run
+caligo create higher-dropout --mode human
 caligo switch baseline
-# Returns to baseline, with its edits preserved.
 exit
 ```
 
-`caligo list` marks the attempt belonging to this shell, even if another terminal has selected another attempt. Switching is handled by the outer project controller: the old coding shell exits and a new shell starts with the target attempt's access rules. Shell processes are not suspended or resumed; files persist. A new attempt starts from the initial project files, not another attempt's uncommitted edits.
+`caligo list` lists this project's attempts. Names are unique and existing attempts are never overwritten. Switching opens a fresh shell with persistent files. Each shell retains its own attempt association, even when other terminals select different attempts.
 
-After leaving, `caligo switch baseline` reopens that attempt. To use another project, leave the coding shell and change into that project's directory. On the host, `--project /path/to/project.toml` can select the project explicitly. Host `exec` and `run` use that project's most recently selected attempt.
+A human shell can read the normal host environment and use ordinary credentials. Its write policy protects the attempt's readable areas, existing read-only files, and workspace root. It also protects prepared evaluator files. Existing read-only files cannot be replaced through an editor's atomic save. Tools and editor servers launched from the shell inherit the boundary.
 
-## Optional development tools
+File permissions and executable bits are preserved during checkout creation and transfer. Each attempt has independent Git metadata outside its declared working files. Ordinary Git commands work through `GIT_DIR` and `GIT_WORK_TREE`; commits and pushes remain explicit. No source repository history or origin remote is imported automatically.
 
-Select add-ons when creating an attempt. Install the tools on the coding host first; Caligo discovers their commands through `PATH` and reports missing dependencies before creating the attempt.
+Host owners can deliberately administer their own filesystem permissions outside a session. Caligo protects collaboration through independent workspaces, protected prepared evaluators, and pinned revisions; it does not claim to restrict a hostile host administrator.
 
-```sh
-caligo create tools --mode user --addon codex --addon code-server
-# You are now in the coding shell. Run either tool normally:
-codex login --device-auth   # First use in this attempt
-codex
-# After leaving Codex:
-code-server                # Open its printed local URL
-# Or select the full attempt workspace explicitly:
-code-server "$CALIGO_WORKSPACE"
-```
+Optional `--addon codex` and `--addon code-server` check for installed human tools. They use your ordinary settings and credentials. Tools do not require add-on registration to run inside a human shell.
 
-`create` always opens the coding shell. Add-ons prepare tools without launching them. Running `code-server` starts a browser editor: its backend, terminals, and agents all run inside the same SRT boundary. Human saves obey the same filesystem restrictions as agent commands. `codex` is the installed command, with a private persistent home for this attempt. Credentials and host sessions are not automatically imported.
+## Agent attempts and steering
 
-Close the editor server with Ctrl-C to return to the same coding shell. `caligo switch tools` reopens that shell with its saved add-ons. The editor defaults to loopback and an available port; ordinary code-server arguments work, such as `code-server --bind-addr 127.0.0.1:8080 .`. This preview supports local coding hosts. Stop the editor before changing attempts from the parent shell; in-editor `caligo exec` and `caligo run` remain associated with that editor's attempt.
-
-Optional tool locations and settings belong in the manifest before creating the project’s first attempt:
+Configure the agent image and explicitly forwarded environment variable names:
 
 ```toml
-[addons.codex]
-# executable = "/path/to/codex"       # Default: discover codex on PATH
-# ca_certificate = "/path/to/ca.pem" # Default: environment or platform CA bundle
-
-[addons.code-server]
-# executable = "/path/to/code-server"
-# port = 8080                        # Default: choose an available loopback port
+[agent]
+image = "caligo-agent:local"
+env = ["OPENAI_API_KEY"]
+# model = "..."
+continuation_delay = 2
 ```
 
-The Codex add-on supplies missing private-config defaults: approvals on request, no nested OS sandbox, and no shared background daemon. SRT enforces the outer restrictions even when Codex calls its own mode `danger-full-access`. Existing explicit Codex settings are preserved. Tool-specific setup lives in `caligo/addons.py`; the sandbox adapter applies the resulting paths and policy.
+Set credential values in the coding-host environment before the service starts; do not put them in the manifest. For Claude, use `ANTHROPIC_API_KEY` or another credential supported by the Claude SDK. Host login sessions are not imported. To rotate service environment credentials, stop the service and start it from an environment containing the new values.
 
-## Workspace boundaries
+```sh
+caligo create search --mode agent --backend codex --goal "Improve validation accuracy"
+# Creation returns immediately after starting a persistent thread.
+caligo attach search
+# Ctrl-C detaches; the agent keeps running.
+caligo steer search "Focus on regularization next"
+caligo steer search --delivery steer "Keep the current change small" # Codex active steering
+caligo interrupt search "Investigate possible data leakage first"
+caligo pause search
+caligo resume search
+caligo stop search
+```
 
-Only declared editable, readable, and executable folders exist in the attempt workspace. The project manifest, fixed evaluator, original repository, controller records, other attempts, and Git control files are outside it.
+Use `--backend claude` for Claude Code. Ordinary steering is queued for the next turn; Codex additionally supports active steering. Claude supports queued input and interruption. Unsupported controls return an error. Interruption may wait for the backend to finish stopping its tools; resume once the pause has been applied.
 
-| Area | User | Supervisor |
+Agents review their objective against changes, checks, and experiment results before ending a turn. `caligo review complete "evidence"` finishes the thread and stops its container after the turn ends. Completion requires no outstanding experiments or queued instructions. `review wait "reason"` waits for experiment results without repeated model calls; `review blocked "help needed"` asks for human input. `review continue "next action"` allows a continuous thread to keep working. Reviews and completion evidence are saved in the conversation event history.
+
+Continuous threads request a review if the agent omits one, then pause if it still does not provide a decision. After 20 automatic turns they pause for a human progress check; `resume` allows another 20. Sending an instruction also resets this count. `--once` disables automatic continuation; the thread stays available for instructions and experiment results unless the agent explicitly completes it. Transient runtime disconnects retry with backoff, up to five restarts. Other runtime/backend errors become visible in the thread state and event stream. Correct the cause and use `resume`, or start another thread after completion:
+
+```sh
+caligo start search --backend codex --goal "Try another approach" --once
+caligo threads search
+caligo attach search --json
+caligo attach search --after 123 --no-follow
+caligo steer search --id instruction-42 "Run the comparison"
+```
+
+Message IDs support idempotent retries. The same ID with different content is rejected. After a crash, an instruction whose delivery cannot be confirmed is recorded as `DELIVERY_UNKNOWN` and is not blindly replayed.
+
+One agent thread at a time can write an attempt. Stopping preserves working files and conversation storage. Backend thread/session IDs are saved separately from Caligo thread IDs and restored on runtime restart. Conversation state is private to the attempt.
+
+The agent and its tools run as an unprivileged user inside Docker with a read-only root filesystem, restricted mounts, dropped capabilities, and outbound networking. Host homes, SSH credentials, other attempts, evaluators, and Docker sockets are absent. The coding container is briefly paused during snapshots to prevent concurrent path replacement.
+
+Inside the container, `caligo exec`, `run`, `status`, `logs`, `artifacts`, `cancel`, and `publish` use an authenticated broker scoped to that attempt. Agents cannot create or switch attempts. Agent dev commands always run in containers too. They cannot escape isolation through a native dev-host command. Operator-side `exec` and `run` use that same persistent thread service.
+
+## Browser interface
+
+```sh
+caligo ui
+```
+
+Create agents, follow their work, send instructions, and pause or resume them in your browser. Experiments has run status, logs, and downloads. Closing the browser leaves agents and submitted jobs running. The UI uses the configured local or SSH coding host.
+
+Choose a model when creating an agent or thread. The dropdown lists models previously used with that backend. Choose Default for the project or backend default, or Other to enter a model ID. The selection stays with the thread across restarts.
+
+Use `--project PATH` to select a manifest, `--port PORT` for a fixed address, or `--no-open` to print the URL. The frontend uses assistant-ui's prebuilt chat components with a ChatGPT-style layout and connects to Caligo's existing service. Send messages normally; while the agent is working, choose Send now, After this response, or Interrupt and send. The stop button pauses its response. Sending to a paused agent resumes it. From a source checkout, run `pnpm --dir ui install --frozen-lockfile` and `pnpm --dir ui build` first. Built wheels include the static UI and require only Python to serve it. See [ui/README.md](ui/README.md) for frontend development.
+
+## Service API
+
+The service runs on the coding host independently of viewers:
+
+```sh
+caligo service start search
+caligo service status search
+caligo service stop search
+```
+
+Stopping the service pauses its active threads. A subsequent `resume` starts the service if necessary and resumes the saved conversation. After an abrupt service crash, reconnecting starts recovery and reconciles orphaned containers. Configure OS service supervision separately if startup at host boot is required.
+
+Service state defaults to `~/.local/state/caligo/`. Set `CALIGO_STATE_DIR` to a persistent **local disk** path on hosts with network-mounted homes. SQLite WAL and service control files must not be placed on NFS. The service's private directory contains `address.json`, a bearer `token`, `threads.sqlite3`, and its log/configuration. Its HTTP API listens on loopback; remote UI clients can use SSH forwarding.
+
+The CLI and browser interface use these authenticated endpoints:
+
+| Method | Path | Operation |
 | --- | --- | --- |
-| Editable folders | Read/write | Read/write |
-| Readable folders | Read-only | Read/write |
-| Executable folder | Read/write | Read/write |
-| Undeclared root entries | Cannot create | Cannot create |
-| Fixed evaluation and other attempts | Inaccessible | Inaccessible |
+| GET / POST | `/threads` | List or create threads |
+| GET | `/threads/ID` | State and current event cursor |
+| GET | `/threads/ID/events?after=N` | Replay JSON events or follow SSE |
+| POST | `/threads/ID/messages` | `{text, delivery, id?, author?}` |
+| POST | `/threads/ID/interrupt` | Interrupt; optional `{text}` redirects |
+| POST | `/threads/ID/pause`, `/resume`, `/stop` | Lifecycle controls |
+| POST | `/threads/ID/run` | Submit `{script?}` |
+| POST | `/threads/ID/exec` | Execute `{argv}`; output enters event stream |
+| GET | `/threads/ID/runs` | List the thread's runs |
+| GET | `/threads/ID/runs/RUN_ID`, `/threads/ID/runs/RUN_ID/logs` | Run status or logs |
+| POST | `/threads/ID/runs/RUN_ID/cancel` | Cancel a submitted job |
 
-The coding shell and its child processes run under Sandbox Runtime. macOS enforces access restrictions rather than presenting a separate filesystem root. The goal is to protect neighboring attempts during ordinary coding, not defend against a hostile user. Standard installed tools remain usable; coding does not require a Docker image or VM. Shell network traffic goes through the runtime's proxies, with public destinations permitted.
+Send `Authorization: Bearer TOKEN`. SSE clients send `Accept: text/event-stream` and may resume using `Last-Event-ID`. Events include schema version 1, sequence IDs, timestamps, an origin (`caligo` or `backend`), normalized progress, native backend events, dev output, and run updates. The current token authorizes the project service; author labels are recorded labels rather than an independent multi-user identity system.
 
-Each attempt has an independent Git repository containing only declared content, with no origin remote pointing to the source project. `GIT_DIR` and `GIT_WORK_TREE` make ordinary Git commands work inside its shell. Commits and pushes remain explicit. Git control files, the attempt's private home, and coding outputs live outside its workspace.
+The container-facing broker has a separate token and only attempt-scoped operations. It uses a TCP bridge for Docker Desktop compatibility and never grants access to the external thread administration API.
 
-## Project configuration
-
-Prepare the files and manifest manually or use `caligo init` as a scaffold. Folder names are configurable.
+## Project configuration and revisions
 
 ```toml
 name = "dropout-study"
 cpu = 8
-gpu = "h200:4"                    # Optional; full experiments only
+# gpu = "h200:4"
 image = "my-experiment-image:latest"
 editable = ["src", "configs"]
 readable = ["data", "reference"]
 executable = "executable"
-execute = "executable/train.py"   # Optional default experiment script
+execute = "executable/train.py"
 fixed = "fixed"
-eval = "eval.sh"                 # Optional script inside fixed/
+eval = "eval.py"
 outputs = "results"
 runtime = "apptainer"
 
@@ -126,58 +172,69 @@ coding = "local"
 dev = "dev-host"
 experiments = "cluster"
 
+[agent]
+image = "caligo-agent:local"
+env = ["OPENAI_API_KEY"]
+
 [remote]
 # root = "/shared/path/caligo"
-# python = "/path/to/python3.12"  # Optional explicit controller interpreter (3.11+)
+# python = "/path/to/python3.12"
 
 [scheduler]
 type = "slurm"
-partition = "your-gpu-partition"
+requeue = true
+partition = "your-partition"
 memory = "64G"
 time = "01:00:00"
-# account = "my-account"
-# setup = "source /etc/profile && module load apptainer"
+# account = "your-account"
+# setup = "module load apptainer"
 
 [inputs]
-data = "s3://datasets/my-inputs/"
+data = "s3://datasets/versioned-inputs/"
 reference = "/local/reference"
 ```
 
-Every location must be explicit: `local` or an SSH alias. Coding, dev, and experiments never inherit locations from one another. Authenticate ordinary SSH first; `CALIGO_SSH_CONFIG` selects a separate SSH config if needed. Remote coding shells additionally need SSH Unix-socket forwarding and `srt` installed on the coding host.
+Every location must be explicit. Remote controllers require Python 3.11+; Caligo probes compatible interpreters or uses `[remote].python`. Authenticate ordinary SSH first; `CALIGO_SSH_CONFIG` selects another SSH config.
 
-The project definition is frozen when its first attempt is created. Use a separate project directory for a different definition. There are no old command aliases or state migrations. Local state is under `.caligo/`; default remote storage is `~/.local/share/caligo/`.
+A persistent remote agent's dev and experiment SSH aliases must be reachable from the **coding host**. For remote coding, client-local dev/experiment locations are rejected because they cannot survive client disconnection.
 
-## Dev commands and full experiments
+New attempts pin a revision of the current manifest, declared initial files, and evaluator. Editing these through Git and creating another attempt produces a new revision within the project. Existing attempts retain their earlier files and evaluator. Prepared evaluator changes are checked against their hash before execution. Docker uses locally cached images when present; pull or rebuild tags explicitly to update them. Resolved image IDs are recorded, and an agent attempt retains its pinned image across runtime restarts. Bucket inputs are frozen at first import of a revision; use versioned URIs or a changed input definition to intentionally import another dataset.
 
-`caligo exec -- COMMAND` snapshots the current declared files into a separate directory on the dev host, runs from its executable folder, streams stdout/stderr, and returns the command's exit code. It uses the dev host's installed dependencies and does not allocate a Slurm job. The copy is separate even when dev and coding both select `local`. Fixed evaluation is excluded. Edits never synchronize back to the coding attempt.
+Local project state lives in `.caligo/`. Default remote project storage is `~/.local/share/caligo/`. State version 3 introduces human/agent attempts; use `caligo migrate` to explicitly convert legacy attempts to human mode without deleting their edits. Existing run artifacts remain readable.
 
-Dev copies and outputs are retained on the dev host; their location is printed, and execution records are kept under the project's `.caligo/` state. These retained copies consume disk until removed. Dev stdin is noninteractive; coding is the interactive shell.
+Each new attempt includes a short, read-only `Agent.MD` generated from its TOML revision: commands, folder permissions, and a checkpointing reminder. Both agent backends receive its contents automatically.
 
-`caligo run` uses the manifest's default script. `caligo run executable/other.py` selects another script. Full experiments freeze all declared files, including dirty, untracked, and ignored files, and submit to Slurm at the experiment location. The job executes the snapshot in the configured container and then runs the optional fixed evaluation. Later edits do not change a submitted run.
+## Dev commands, evaluation, and artifacts
+
+`caligo exec -- COMMAND` copies current declared files to the dev location, streams output, and returns the command's exit code. Human dev commands use the host environment under write protection; agent dev commands use the declared experiment container. The copy is separate even when coding and dev are both local. Fixed evaluators are excluded, and edits never synchronize back. Retained copies consume disk until removed.
+
+`caligo run` uses `execute`; `caligo run executable/other.py` selects another script. It freezes dirty, untracked, and ignored files, submits to Slurm, and retains exact hashes and provenance. Participant code receives writable `CALIGO_OUTPUTS` and cannot access `/fixed`.
+
+After successful participant execution, a separate evaluation container receives `/fixed`, a read-only workspace, read-only participant artifacts at `CALIGO_OUTPUTS`, and a writable `CALIGO_EVALUATION`. **Update evaluators to write metrics/results into `CALIGO_EVALUATION`.** Authoritative results live under the run's `evaluation/`; participant artifacts live under `artifacts/`. Artifact symlinks and special files are rejected before evaluation. Evidence downloads skip unsafe links while retaining ordinary logs and records.
 
 ```sh
 caligo status RUN_ID
 caligo logs RUN_ID
 caligo artifacts RUN_ID ./downloads
 caligo cancel RUN_ID
+caligo publish RUN_ID
 ```
 
-Run records include the project name, attempt name and ID, Git state, file hashes, container image, logs, outcomes, and artifacts. Failed runs retain available evidence. The experiment host needs Slurm and Apptainer/Singularity or Docker; its storage must be accessible on compute nodes. Selecting `experiments = "local"` requires these tools locally.
+Failures retain available evidence. Artifact downloads use a fresh run directory and refuse to overwrite an existing destination. Bucket transfers/publication use rclone. Completed run results are delivered once to their originating agent thread; interrupting or stopping a thread does not cancel submitted jobs. Persistent run routes remain discoverable after the agent service stops and after selecting another project revision.
 
-| Variable | Coding shell | Dev command | Full experiment |
-| --- | --- | --- | --- |
-| `CALIGO_WORKSPACE` | Attempt workspace | Dev copy | Frozen execution copy |
-| `CALIGO_EXECUTABLE` | Executable folder | Executable folder | Executable folder |
-| `CALIGO_OUTPUTS` | Attempt outputs | Dev outputs | `/outputs` |
-| `CALIGO_FIXED` | Unset | Unset | `/fixed` |
+## Slurm requeueing
 
-Bucket inputs and outputs use `rclone` (`s3://`, `gs://`, or configured remotes). Inputs are copied, never written back to their source. `caligo publish RUN_ID` retries bucket publication. Each artifact download gets its own run directory and refuses to overwrite an existing destination.
+`scheduler.requeue = true` enables requeue eligibility for experiments and routes dev commands through Slurm. Both use the manifest's compute requests and scheduler setup. Coding does not allocate GPUs.
+
+Slurm restarts the original command with the same run ID, working directory, checkpoint outputs, and appended logs. Your program saves and reloads checkpoints. Caligo preserves each execution under `executions/RESTART_COUNT/` and uses current scheduler evidence rather than stale outcomes. It does not resubmit after application failure or explicit cancellation. Cluster policy must permit requeueing; `--requeue` does not override it.
+
+Controller records, execution copies, images, and checkpoint outputs must be on persistent shared storage accessible to replacement compute nodes. Bucket publication is an export rather than live checkpoint replication. Service SQLite state remains on the coding host's local disk.
 
 ## Verification
 
 ```sh
 pytest -q
-CALIGO_TEST_DOCKER=1 pytest -q  # Also verifies experiment container behavior
+CALIGO_TEST_DOCKER=1 pytest -q
 ```
 
-Behavior checks cover project-scoped names, duplicate/unknown attempts, a real macOS terminal creating and switching attempts, persistent edits, filesystem isolation, independent Git metadata, dev output and exit status, frozen experiment inputs, separate host routing, failure evidence, and bucket storage. See [docs/verification.md](docs/verification.md) for evidence and limits.
+Keep tests focused on user-visible behavior: workspace creation and permissions, frozen runs and evaluation, agent communication and completion, host routing, storage, and checkpoint recovery. Avoid assertions about exact prose, listing order, private storage layouts, or policy thresholds. See [docs/verification.md](docs/verification.md) for observed coverage and limits.

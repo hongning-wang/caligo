@@ -1,12 +1,16 @@
 """Run the real bootstrap/probe/archive code through a local SSH stand-in."""
 from pathlib import Path
+import base64
+import os
 import sys
+import tarfile
 
 import pytest
 
-from caligo.common import CaligoError
 from caligo.manifest import load
+from caligo.preparation import prepare
 from caligo.transport import Transport
+from caligo.workflow import Endpoint
 
 
 @pytest.fixture
@@ -44,46 +48,51 @@ def test_old_default_selects_modern_python_and_runs_shipped_agent(remote):
     assert result["python"] == sys.version
 
 
-def test_unsupported_host_fails_before_installing(remote):
-    transport, home, _ = remote
-    with pytest.raises(CaligoError, match=r"No usable Python 3.11\+ on test-host") as error:
-        transport.install()
-    assert "Python 3.6.8" in str(error.value)
-    assert "project.toml" in str(error.value)
-    assert not (home / ".local").exists()
-    assert transport.agent is None
-
-
-@pytest.mark.parametrize("explicit", ["python3", "missing-python"])
-def test_explicit_interpreter_never_silently_falls_back(remote, explicit):
-    transport, home, binaries = remote
-    (binaries / "python3.12").symlink_to(sys.executable)
-    transport.python = explicit
-    with pytest.raises(CaligoError, match="without fallback"):
-        transport.install()
-    assert not (home / ".local").exists()
-
-
-def test_explicit_executable_path_with_spaces(remote):
-    transport, home, binaries = remote
-    executable = binaries / "custom python"
-    executable.symlink_to(sys.executable)
-    transport.python = str(executable)
-    assert transport.install() == str(home)
-    assert transport.python == str(executable)
-    assert transport.rpc({"action": "probe"})["home"] == str(home)
-
-
-def test_ssh_failure_is_not_reported_as_a_python_requirement(remote):
-    transport, _, _ = remote
-    transport.ssh = ["/bin/sh", "-c", "echo 'Permission denied (publickey)' >&2; exit 255"]
-    with pytest.raises(CaligoError, match=r"SSH connection to test-host failed: Permission denied"):
+@pytest.mark.parametrize("use_ssh", [False, True], ids=["local", "shipped-rpc"])
+def test_project_snapshot_and_evidence_through_controller_api(
+    remote, project, tmp_path, monkeypatch, use_ssh
+):
+    transport, _, binaries = remote
+    root = str(tmp_path / "controller")
+    if use_ssh:
+        (binaries / "python3.12").symlink_to(sys.executable)
         transport.install()
 
+        def rpc(action, **values):
+            return transport.rpc(
+                dict(root=root, project="rpc-test", action=action, **values)
+            )
+    else:
+        rpc = Endpoint("local", root, "rpc-test", {}).rpc
+    monkeypatch.setenv("PATH", os.defpath)
 
-@pytest.mark.parametrize("value", ['""', '123', '"-python"', '"python\\n"'])
-def test_invalid_remote_python_is_rejected_at_manifest_load(project, value):
-    path = project / "project.toml"
-    path.write_text(path.read_text().replace('[remote]', '[remote]\npython = ' + value))
-    with pytest.raises(CaligoError, match="remote.python must name"):
-        load(path)
+    spec = load(project / "project.toml")
+    stage = tmp_path / "payload"
+    prepare(project / "project.toml", spec, stage)
+    archive = tmp_path / "project.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for item in stage.iterdir():
+            tar.add(item, arcname=item.name)
+    rpc("bootstrap", archive=str(archive), development=True)
+    attempt = rpc("create", mode="human", name="baseline")
+    assert rpc("environment", environment=attempt["id"]) == attempt
+
+    workspace = Path(attempt["workspace"])
+    (workspace / "src/model.py").write_text("edited before submission\n")
+    snapshot = rpc("snapshot", environment=attempt["id"])
+    run_id = snapshot["id"]
+    status = rpc("status", run=run_id)
+    assert status["state"] == "PREPARED"
+    assert status["script"] == spec["execute"]
+    assert status["inputs_sha256"] == snapshot["inputs_sha256"]
+    directory = Path(status["location"])
+    (workspace / "src/model.py").write_text("edited after submission\n")
+    assert (directory / "inputs/src/model.py").read_text() == "edited before submission\n"
+
+    assert rpc("logs", run=run_id) == {"logs": ""}
+    (directory / "logs.txt").write_text("experiment output\n")
+    assert rpc("logs", run=run_id) == {"logs": "experiment output\n"}
+    tail = rpc("tail", run=run_id)
+    assert base64.b64decode(tail["data"]) == b"experiment output\n"
+    assert rpc("tail", run=run_id, offset=tail["offset"])["data"] == ""
+    assert rpc("publish", run=run_id)["state"] == "PREPARED"

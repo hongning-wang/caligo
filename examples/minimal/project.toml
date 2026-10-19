@@ -19,6 +19,7 @@ experiments = "local"  # This example requires local Slurm for caligo run
 
 [scheduler]
 type = "slurm"
+# requeue = true  # Also requires Slurm at locations.dev; code must load its checkpoints
 # partition = "your-partition"  # Omit to use the cluster default
 # setup = "module load apptainer"  # Optional site-specific batch setup
 time = "00:03:00"

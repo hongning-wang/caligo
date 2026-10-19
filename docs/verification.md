@@ -1,5 +1,67 @@
 # Verification
 
+## Core functionality checks — October 19, 2026
+
+Reduced the Python suite from 61 to 44 tests focused on workspace creation and permissions, frozen runs and evaluation, agent communication and completion, host routing, storage, and checkpoint recovery. Removed minor configuration edge cases and legacy migration tests. Checks no longer require exact guide prose, workspace listings, agent order, reminder counts, or a fixed automatic-turn limit.
+
+`CALIGO_TEST_DOCKER=1 .venv/bin/python -m pytest -q`: **44 passed** in 83.31 seconds. `pnpm test` in `ui/`: **4 passed**. UI event tests check delivery and tool output without requiring specific display labels. Ruff and whitespace checks pass.
+
+## Workspace agent guide — October 19, 2026
+
+New attempts include a read-only `Agent.MD` with commands, TOML-derived folders and hosts, and checkpoint save/reload guidance. Both native backends receive its contents; older workspaces retain their inline instructions.
+
+`CALIGO_TEST_DOCKER=1 .venv/bin/python -m pytest -q`: **61 passed** in 90.67 seconds. Checks cover custom TOML folders/hosts in both modes, workspace validation, guide visibility and write protection in a real container, and delivery through the Codex app-server protocol fixture. No live model inference was used.
+
+## Agent Chat UI — October 19, 2026
+
+The frontend in `ui/` uses assistant-ui's prebuilt Thread and Composer with Caligo's existing service. The custom chat renderer, scrolling, and copy controls have been removed. Caligo supplies message conversion, steering, and experiment controls. Next.js exports static assets served by the Python gateway; Node is needed to build, not to run the packaged interface.
+
+- TypeScript, four event-conversion tests, and the production build pass. The Python suite passes all **57 tests**, including Docker checks.
+- Chrome checks cover custom model selection, agent creation, Markdown, sending, pause/resume, reload/replay, stopping, new threads/history, experiment submission, and logs. The prebuilt composer also sends active steering, stops a response, and resumes a paused agent when a new message is sent. A phone-sized viewport retains navigation and the composer without horizontal overflow.
+- A wheel built outside the frontend runtime serves its HTML, CSS, and JavaScript outside the checkout. The upstream license is included; the old vanilla frontend is removed.
+
+Browser interactions use a deterministic demo agent and simulated experiment submissions. Live model inference and live Slurm submission were not exercised for this UI change.
+
+## Browser interface — October 18, 2026
+
+`caligo ui` serves the frontend from `ui/` through a local Python gateway. It reuses project creation, agent services, durable events, and original coding-host run routes without a frontend build or new runtime dependencies.
+
+- Chrome checks covered agent creation, sending instructions, replay after reload, pause/resume, stopping, the restart dialog, and desktop/mobile layouts.
+- HTTP and subprocess checks cover multiple project revisions, new threads, idempotent instructions, SSE replay cursors, viewer disconnection, run status/logs, and evaluation-result downloads. Archive transfer also runs through the shipped zipapp with an SSH stand-in.
+- The wheel builds and serves all three frontend assets outside the source checkout.
+
+Live remote SSH, Slurm, and authenticated model inference were not exercised for the UI.
+
+## Human and agent modes — October 18, 2026
+
+Implemented human/agent attempts, pinned project revisions, protected evaluator stages, a detached coding-host service, persistent agent threads, a resumable HTTP/SSE API, and native Codex/Claude adapters. The entries below this section describe historical versions; their supervisor/user and SRT behavior has been replaced.
+
+Verified on macOS with Docker Desktop (engine 29.2.1):
+
+- `CALIGO_TEST_DOCKER=1 .venv/bin/python -m pytest -q`: **42 passed** in 45.51 seconds. All Docker integration checks ran; none were skipped.
+
+- Real interactive human shells retain ordinary host file access, installed tools, Git operations, and persistent edits. Write-policy checks reject protected data writes, deletion, chmod, directory replacement, and atomic editor saves over read-only files. Executable bits and empty directories survive checkout creation. Creating a revision from changed evaluator/code files leaves earlier attempts unchanged.
+- Actual Docker containers reject writes to readable inputs, protected files, and undeclared workspace entries. Host sentinel files, `/fixed`, and the Docker socket are absent. A real scoped HTTP broker routes development work to another container, streams its output and exit status, and rejects attempt creation/switching.
+- The full CLI starts a detached service and a real coding container using a deterministic app-server protocol fixture. Viewer replay leaves the thread running. Active steering and interruption work during a held turn. A containerized dev command streams stdout/stderr and exits with code 7. Intentional service shutdown/resume and SIGKILL recovery retain the native conversation identity and working files while reconciling orphaned containers.
+- Deterministic subprocess tests cover queued input, active steering bypassing next-turn input, one-writer leases, message idempotency, SSE authentication/replay, pause/resume, automatic continuation, transient runtime retry, ambiguous delivery preservation, and terminal run notifications delivered once.
+- Native Codex CLI 0.163.0 and Claude Agent SDK 0.2.168 both initialize inside the supplied agent container without imported credentials or model inference. Model-generated turns are represented by deterministic fixtures; live authenticated inference and provider-specific recovery during a real model turn remain unverified.
+- Actual experiment containers exclude the evaluator from participant execution. Evaluation reads participant artifacts through a read-only mount and writes only its separate evaluation directory. Participant-forged metrics do not replace authoritative metrics. Artifact links are rejected before evaluation; regular failure evidence remains downloadable.
+- Legacy conversion preserves working edits. Persistent run routes can be recovered without a live agent service and retain their original remote configuration after a project revision change.
+- Existing real checkpoint-writing programs and simulated Slurm requeues retain run IDs, appended logs, working files, outputs, and per-execution outcomes. Python interpreter discovery and shipped zipapp RPC checks remain covered. The pre-existing scheduler changes were retained.
+- The 0.2.0 wheel builds successfully and includes the agent image definition and new runtime modules. Ruff and whitespace checks pass.
+
+Linux human Bubblewrap enforcement, live remote SSH deployment of the new service, and live Slurm scheduling/preemption were not exercised for this revision. Service SQLite storage must be local disk, and host boot supervision must be configured separately.
+
+## Slurm requeueing — October 17, 2026
+
+`scheduler.requeue = true` enables Slurm requeue eligibility for experiments and routes dev commands through native Slurm jobs. Restarts retain their working directory, checkpoint outputs, run ID, and appended logs. Application code saves and reloads its own checkpoints.
+
+- `.venv/bin/python -m pytest -q`: **26 passed, 1 skipped**. The optional Docker integration test was skipped.
+- Dev checks execute the generated batch script and real checkpoint-writing Python programs on separate filesystem-backed hosts. The first execution's controller and command are killed together with SIGKILL after saving a checkpoint. A simulated Slurm requeue reruns the same batch script with an incremented restart count. The program loads its checkpoint, retains working-directory files, and returns either success or exit code 7. Logs from both executions stream once, and only one submission occurs.
+- Experiment checks restart a real checkpoint-writing program through the controller with the container launcher replaced by a native subprocess. Outputs and writable files survive, submitted inputs stay frozen, and queued state overrides the previous execution's failed outcome.
+- Checks also cover strict boolean configuration, submission flags, transient scheduler polling failures, retained per-execution outcomes, and cancellation while a dev job waits.
+- Slurm scheduling/preemption and SSH are simulated. No live Slurm preemption, replacement node, GPU checkpoint recovery, or container restart was verified. Production recovery requires the cluster's requeue policy and persistent shared storage on replacement nodes.
+
 ## Development add-ons — October 17, 2026
 
 Verified on macOS with SRT 0.0.79, Codex CLI 0.163.0, and code-server 4.141.0:

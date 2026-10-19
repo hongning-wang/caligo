@@ -1,6 +1,5 @@
 """Exercise real S3 protocol transfers against a disposable local server."""
 import json
-import os
 from pathlib import Path
 import shutil
 import socket
@@ -47,8 +46,9 @@ def test_s3_inputs_publication_and_source_isolation(project, tmp_path, monkeypat
         text = path.read_text().replace('outputs = "results"', 'outputs = "s3://output-bucket/results"')
         path.write_text(text + '\n[inputs]\ndata = "s3://input-bucket/data"\n')
         c = bootstrap(project, tmp_path, monkeypatch)
-        supervisor, user = c.create("supervisor", "setup"), c.create("user", "baseline")
-        (Path(supervisor["workspace"]) / "data/values.json").write_text("[9]")
+        supervisor, user = c.create("human", "setup"), c.create("human", "baseline")
+        with pytest.raises(PermissionError):
+            (Path(supervisor["workspace"]) / "data/values.json").write_text("[9]")
         original = tmp_path / "original"
         transfer("s3://input-bucket/data", original)
         assert json.loads((original / "values.json").read_text()) == [1, 2, 3]
