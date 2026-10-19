@@ -110,6 +110,35 @@ def events(service, thread, kind):
     return [event for event in service.store.events(thread) if event["type"] == kind]
 
 
+def test_attempt_fork_delete_require_stopped_agent_and_keep_history(service):
+    from pathlib import Path
+
+    instance, attempt = service
+    thread = instance.create(attempt["id"], "codex", "hold", continuous=False)["id"]
+    wait_for(lambda: instance.store.thread(thread)["state"] == "RUNNING")
+    workspace = Path(attempt["workspace"])
+    (workspace / "src/marker").write_text("agent work")
+    home = Path(attempt["git_dir"]).parent / "agent-home"
+    home.mkdir(exist_ok=True)
+    (home / "private-session").write_text("conversation state")
+    for operation in (lambda: instance.controller.fork(attempt["id"], "branch"),
+                      lambda: instance.controller.delete(attempt["id"])):
+        with pytest.raises(CaligoError):
+            operation()
+        assert workspace.is_dir()
+    instance.control(thread, "stop")
+    wait_for(lambda: instance.store.thread(thread)["state"] == "STOPPED")
+    fork = instance.controller.fork(attempt["id"], "branch")
+    assert (Path(fork["workspace"]) / "src/marker").read_text() == "agent work"
+    assert not (Path(fork["git_dir"]).parent / "agent-home").exists()
+    history = instance.store.events(thread)
+    instance.controller.delete(attempt["id"])
+    assert not workspace.exists()
+    assert instance.store.events(thread) == history
+    with pytest.raises(CaligoError):
+        instance.create(attempt["id"], "codex", "cannot restart deleted files")
+
+
 def test_stream_steering_idempotency_interrupt_and_resume(service):
     service, attempt = service
     thread = service.create(attempt["id"], "codex", "hold", continuous=False)["id"]

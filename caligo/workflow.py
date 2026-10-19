@@ -208,8 +208,17 @@ class Workflow:
             candidates = [self.coding]
             if self.project_manager:
                 seen = {(self.coding.location, self.coding.project)}
-                for attempt in self.state["attempts"]:
-                    workflow = self.project_manager.workflow(attempt["id"])
+                for attempt in self.state["attempts"] + self.state.get(
+                    "deleted_attempts", []
+                ):
+                    view = dict(
+                        self.state,
+                        spec=attempt.get("spec", self.spec),
+                        controller_project=attempt.get(
+                            "controller_project", self.state["project"]
+                        ),
+                    )
+                    workflow = Workflow(view, self.directory)
                     endpoint = workflow.coding
                     if (endpoint.location, endpoint.project) not in seen:
                         seen.add((endpoint.location, endpoint.project))
@@ -289,9 +298,11 @@ class Workflow:
                 return result
         except Exception as error:
             record.update(
-                state="SUBMISSION_UNKNOWN"
-                if record["state"] == "SUBMITTING"
-                else "PREPARATION_FAILED",
+                state=(
+                    "SUBMISSION_UNKNOWN"
+                    if record["state"] == "SUBMITTING"
+                    else "PREPARATION_FAILED"
+                ),
                 error=str(error),
             )
             write_json(directory / "run.json", record)

@@ -43,6 +43,18 @@ def main():
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("list", help="List attempts in the current project")
     commands.add_parser("switch", help="Enter another attempt").add_argument("name")
+    fork = commands.add_parser(
+        "fork", help="Copy current files and Git history into an independent attempt"
+    )
+    fork.add_argument("source")
+    fork.add_argument("name")
+    delete = commands.add_parser(
+        "delete", help="Delete an attempt; keep submitted runs"
+    )
+    delete.add_argument("name")
+    delete.add_argument(
+        "-y", "--yes", action="store_true", help="Skip deletion confirmation"
+    )
     create = commands.add_parser("create", help="Create and enter an attempt")
     create.add_argument("name")
     create.add_argument("--mode", default="human", choices=["human", "agent"])
@@ -75,6 +87,13 @@ def main():
     if args.action == "exec" and args.argv[:1] == ["--"]:
         args.argv = args.argv[1:]
     try:
+        if args.action == "delete" and not args.yes:
+            if not sys.stdin.isatty():
+                raise ValueError("Deletion requires confirmation; use --yes in scripts")
+            if input(
+                f"Delete attempt '{args.name}' and its working files? Submitted runs are kept. [y/N] "
+            ).strip().lower() not in {"y", "yes"}:
+                raise ValueError("Deletion cancelled")
         with response_stream(vars(args)) as response:
             while True:
                 header = json.loads(response.readline())
@@ -144,7 +163,7 @@ def main():
             print(result["logs"], end="")
         else:
             print(json.dumps(result, indent=2))
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, EOFError) as error:
         print("caligo: " + str(error), file=sys.stderr)
         sys.exit(1)
 

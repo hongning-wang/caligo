@@ -55,7 +55,7 @@ for line in sys.stdin:
             assert result.returncode==7,(result.stdout,result.stderr)
             emit('agent.text',{'text':result.stdout})
         elif command['text']=='scope':
-            for action in (['create','escape','--mode','human'],['switch','other']):
+            for action in (['create','escape','--mode','human'],['switch','other'],['fork','search','escape'],['delete','search','--yes']):
                 result=subprocess.run([os.environ['CALIGO_CLIENT'],*action],capture_output=True,text=True)
                 assert result.returncode!=0
             emit('agent.text',{'text':'SCOPED'})

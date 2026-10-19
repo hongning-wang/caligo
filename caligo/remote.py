@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import traceback
+from contextlib import contextmanager
 
 from .common import (
     CaligoError,
@@ -261,7 +262,120 @@ class Controller:
         return record
 
     def environment(self, env_id):
-        return read_json(self.project / "attempts" / (valid_id(env_id) + ".json"))
+        record = read_json(self.project / "attempts" / (valid_id(env_id) + ".json"))
+        if record.get("deleted_at"):
+            raise CaligoError("Attempt has been deleted: " + record["name"])
+        return record
+
+    @contextmanager
+    def attempt_access(self, env_id, exclusive=False):
+        path = self.project / "locks" / (valid_id(env_id) + "-access.lock")
+        try:
+            with lock(path, shared=not exclusive, blocking=False):
+                yield
+        except BlockingIOError as error:
+            raise CaligoError("Attempt is in use; exit its shells and retry") from error
+
+    def require_stopped(self, attempt):
+        if attempt["mode"] != "agent":
+            return
+        from .service import service_directory
+        from .store import Store
+
+        database = service_directory(self) / "threads.sqlite3"
+        if database.exists() and any(
+            thread["attempt"] == attempt["id"]
+            and thread["state"] not in {"STOPPED", "COMPLETED"}
+            for thread in Store(database).threads()
+        ):
+            raise CaligoError(
+                "Stop the agent first: caligo agent stop "
+                + attempt["name"]
+                + "; wait for STOPPED, then retry"
+            )
+
+    def fork(self, env_id, name):
+        valid_id(name)
+        run(["git", "check-ref-format", "--branch", name])
+        initial = self.environment(env_id)
+        with (
+            self.attempt_access(env_id, exclusive=initial["mode"] == "agent"),
+            lock(self.project / "locks" / (valid_id(env_id) + ".lock")),
+        ):
+            source = self.environment(env_id)
+            self.require_stopped(source)
+            workspace = Path(source["workspace"])
+            self.check_workspace(workspace)
+            new_id = identifier("attempt-")
+            target = self.project / "worktrees" / new_id
+            private = self.project / "attempt-state" / new_id
+            git_dir = private / "git"
+            try:
+                # Copy dirty, untracked, and ignored content, with independent
+                # Git objects/index. Never execute agent-controlled Git config.
+                git_before = inventory(source["git_dir"])
+                files = copy_tree(workspace, target)
+                git_files = copy_tree(source["git_dir"], git_dir)
+                if inventory(workspace) != files or git_files != git_before:
+                    raise CaligoError(
+                        "Files or Git state changed while forking; finish edits and retry"
+                    )
+                run(
+                    [
+                        "git",
+                        "config",
+                        "--file",
+                        str(git_dir / "config"),
+                        "--no-includes",
+                        "core.worktree",
+                        str(target),
+                    ]
+                )
+                from .permissions import apply, protect
+
+                protect(target / "Agent.MD")
+                apply(target, self.spec, read_json(self.project / "permissions.json"))
+                record = dict(
+                    source,
+                    id=new_id,
+                    name=name,
+                    workspace=str(target),
+                    git_dir=str(git_dir),
+                    created_at=now(),
+                    forked_from=env_id,
+                )
+                write_json(self.project / "attempts" / (new_id + ".json"), record)
+                return record
+            except Exception:
+                self.remove_attempt_tree(target)
+                self.remove_attempt_tree(private)
+                raise
+
+    @staticmethod
+    def remove_attempt_tree(path):
+        path = Path(path)
+        if not path.exists():
+            return
+        # Release Caligo's read-only permissions/ACLs on this attempt only.
+        if sys.platform == "darwin":
+            run(["/bin/chmod", "-RN", str(path)])
+        for folder, _, _ in os.walk(path, followlinks=False):
+            Path(folder).chmod(Path(folder).stat().st_mode | 0o700)
+        shutil.rmtree(path)
+
+    def delete(self, env_id):
+        with (
+            self.attempt_access(env_id, exclusive=True),
+            lock(self.project / "locks" / (valid_id(env_id) + ".lock")),
+        ):
+            path = self.project / "attempts" / (env_id + ".json")
+            record = read_json(path)
+            self.require_stopped(record)
+            for folder in ("worktrees", "attempt-state", "dev-outputs"):
+                self.remove_attempt_tree(self.project / folder / env_id)
+            record["deleted_at"] = record.get("deleted_at") or now()
+            write_json(path, record)
+            return {"deleted": record["name"], "id": env_id, "runs_preserved": True}
 
     def check_workspace(self, workspace):
         spec = self.spec
@@ -538,6 +652,10 @@ class Controller:
         )
 
     def native_shell(self, env_id, argv, session_dir, coding=False, emit=None):
+        with self.attempt_access(env_id):
+            return self._native_shell(env_id, argv, session_dir, coding, emit)
+
+    def _native_shell(self, env_id, argv, session_dir, coding=False, emit=None):
         env = self.environment(env_id)
         workspace = Path(env["workspace"])
         spec = self.spec
@@ -572,7 +690,7 @@ class Controller:
         if env["mode"] == "agent":
             if coding:
                 raise CaligoError(
-                    "Agent attempts use caligo attach; they do not expose host shells"
+                    "Agent attempts use caligo agent attach; they do not expose host shells"
                 )
             return self.container_dev(env, command, outputs, emit)
         if coding:

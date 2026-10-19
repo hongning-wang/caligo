@@ -1,5 +1,21 @@
 # Verification
 
+## Agent command namespace — October 19, 2026
+
+Agent controls now live under `caligo agent`; flat spellings remain hidden compatibility aliases. Help works without a project, including `caligo agent` and `caligo help agent start`. Checks cover equivalent options for every old/new spelling and `--project` at all three command levels.
+
+CLI and attempt checks: **8 passed**. The detached CLI/Docker integration check: **1 passed**, exercising namespaced attach, threads, steering, interruption, service shutdown/recovery, stop, and starting a fresh conversation. Ruff and whitespace checks pass.
+
+## Attempt forks, deletion, and CLI help — October 19, 2026
+
+Fork checks cover independent dirty/staged Git state, committed history, ignored and untracked files, empty directories, protected permissions, source revisions whose current manifest has changed, duplicate names, and rejected concurrent edits. A real macOS terminal forks from its current shell, deletes another attempt, and verifies that the open attempt cannot be deleted.
+
+Deletion checks retain submitted inputs and downloadable evidence after deleting every attempt and after reusing a name. Local calls and the shipped zipapp through an SSH stand-in exercise fork/delete on the coding host. A deterministic agent backend checks that active threads block both operations and that stopped-agent forks have fresh conversation storage; deletion preserves the event journal. Container broker checks reject agent requests to fork or delete attempts.
+
+The UI assets must be built before running the full Python suite. With this environment's pytest 7.4.4, explicitly register the shared service fixture using `-p test_agent_service` and include the checkout and `tests/` on `PYTHONPATH`.
+
+`CALIGO_TEST_DOCKER=1 PYTHONPATH="$PWD:$PWD/tests" /opt/anaconda3/bin/python -m pytest -q -p test_agent_service`: **50 passed** in 83.72 seconds, with no skips. The UI production build, Ruff, and whitespace checks pass. SSH uses a local stand-in; live Slurm and model inference were not exercised.
+
 ## Core functionality checks — October 19, 2026
 
 Reduced the Python suite from 61 to 44 tests focused on workspace creation and permissions, frozen runs and evaluation, agent communication and completion, host routing, storage, and checkpoint recovery. Removed minor configuration edge cases and legacy migration tests. Checks no longer require exact guide prose, workspace listings, agent order, reminder counts, or a fixed automatic-turn limit.

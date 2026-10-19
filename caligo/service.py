@@ -85,6 +85,10 @@ class Service:
         )
 
     def create(self, attempt_id, backend, goal, continuous=True, model=None):
+        with self.controller.attempt_access(attempt_id):
+            return self._create(attempt_id, backend, goal, continuous, model)
+
+    def _create(self, attempt_id, backend, goal, continuous=True, model=None):
         if backend not in BACKENDS:
             raise CaligoError("Backend must be codex or claude")
         attempt = self.controller.environment(attempt_id)
@@ -482,7 +486,7 @@ def request(controller, method, path, values=None):
         raise CaligoError(json.load(error).get("error", str(error))) from error
     except (URLError, FileNotFoundError, ConnectionError) as error:
         raise CaligoError(
-            "Agent service unavailable; use caligo service start: " + str(error)
+            "Agent service unavailable; use caligo agent service start: " + str(error)
         ) from error
 
 

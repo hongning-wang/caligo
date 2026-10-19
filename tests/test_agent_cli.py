@@ -73,17 +73,21 @@ def test_detached_cli_steering_dev_and_service_restart(project, tmp_path):
 
         wait_for(lambda: state()["state"] == "RUNNING")
         before = state()["backend_id"]
-        replay = cli("attach", "search", "--json", "--no-follow")
+        assert thread in {
+            item["id"]
+            for item in json.loads(cli("agent", "threads", "search").stdout)["threads"]
+        }
+        replay = cli("agent", "attach", "search", "--json", "--no-follow")
         assert "agent.text" in replay.stdout
         assert state()["state"] == "RUNNING"
-        cli("steer", "search", "--delivery", "steer", "new direction")
+        cli("agent", "steer", "search", "--delivery", "steer", "new direction")
         wait_for(
             lambda: (
                 "steered:new direction"
-                in cli("attach", "search", "--json", "--no-follow").stdout
+                in cli("agent", "attach", "search", "--json", "--no-follow").stdout
             )
         )
-        cli("interrupt", "search", "next instruction")
+        cli("agent", "interrupt", "search", "next instruction")
         work = Path(manager.find("search")["workspace"])
         wait_for(lambda: (work / "src/agent-marker").read_text() == "next instruction")
         wait_for(lambda: state()["state"] == "WAITING")
@@ -107,7 +111,7 @@ def test_detached_cli_steering_dev_and_service_restart(project, tmp_path):
         assert dev.returncode == 7, (dev.stdout, dev.stderr)
         assert "DEV_OUT" in dev.stdout and "DEV_ERR" in dev.stderr
         # Service shutdown pauses the thread, preserving both backend ID and files.
-        cli("service", "stop", "search")
+        cli("agent", "service", "stop", "search")
         controller = manager.workflow().coding.controller
         address = service_directory(controller) / "address.json"
         pid = json.loads(address.read_text())["pid"]
@@ -118,24 +122,32 @@ def test_detached_cli_steering_dev_and_service_restart(project, tmp_path):
             except ProcessLookupError:
                 break
             time.sleep(0.1)
-        cli("resume", "search")
+        cli("agent", "resume", "search")
         wait_for(lambda: state()["state"] == "WAITING")
         assert state()["backend_id"] == before
         assert (work / "src/agent-marker").read_text() == "next instruction"
-        cli("steer", "search", "after restart")
+        cli("agent", "steer", "search", "after restart")
         wait_for(lambda: (work / "src/agent-marker").read_text() == "after restart")
         wait_for(lambda: state()["state"] == "WAITING")
         # Abrupt daemon death leaves recovery to reconcile its orphan container.
         pid = json.loads(address.read_text())["pid"]
         os.kill(pid, signal.SIGKILL)
-        cli("attach", "search", "--json", "--no-follow")
+        cli("agent", "attach", "search", "--json", "--no-follow")
         wait_for(lambda: state()["state"] == "WAITING")
         assert state()["backend_id"] == before
         assert (
             "runtime.recovered"
-            in cli("attach", "search", "--json", "--no-follow").stdout
+            in cli("agent", "attach", "search", "--json", "--no-follow").stdout
         )
-        cli("stop", "search")
+        cli("agent", "stop", "search")
+        wait_for(lambda: state()["state"] == "STOPPED")
+        thread = json.loads(
+            cli(
+                "agent", "start", "search", "--goal", "new conversation", "--once"
+            ).stdout
+        )["id"]
+        wait_for(lambda: state()["state"] == "WAITING")
+        cli("agent", "stop", "search")
         wait_for(lambda: state()["state"] == "STOPPED")
         selected = manager.start_agent(
             "search",
@@ -151,7 +163,7 @@ def test_detached_cli_steering_dev_and_service_restart(project, tmp_path):
         )
         assert model_record.read_text() == "selected-model"
         assert state()["model"] == "selected-model"
-        cli("stop", "search")
+        cli("agent", "stop", "search")
         wait_for(lambda: state()["state"] == "STOPPED")
     finally:
         try:

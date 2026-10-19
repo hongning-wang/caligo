@@ -15,12 +15,12 @@ Caligo provides human and agent attempts for reproducible experiments. Project a
 ```sh
 caligo create baseline --mode human
 caligo create search --mode agent --backend codex --goal "Improve validation accuracy"
-caligo attach search
-caligo steer search "Focus on regularization"
-caligo interrupt search "Investigate data leakage first"
-caligo pause search
-caligo resume search
-caligo stop search
+caligo agent attach search
+caligo agent steer search "Focus on regularization"
+caligo agent interrupt search "Investigate data leakage first"
+caligo agent pause search
+caligo agent resume search
+caligo agent stop search
 ```
 
 ## Human mode and write permissions
@@ -80,7 +80,8 @@ The coding-host service owns agent containers independently of the CLI or UI. St
 - Delegate conversation context and tool execution to these backends. Caligo owns container isolation, experiment operations, event persistence, and lifecycle controls.
 - Keep Caligo thread IDs separate from backend conversation IDs. Persist both IDs and expose capabilities to clients.
 - Run with unattended backend approval settings inside the outer container boundary. Unexpected interactive requests produce a visible blocked state.
-- Conversation forks do not clone files. Any future fork feature must coordinate a conversation branch with a separate attempt workspace; the initial API does not expose workspace forks.
+- `caligo fork SOURCE NEW` creates a separate attempt from the source's current working files and independent Git metadata/index, retaining its pinned revision and mode. Dirty, untracked, and ignored files and permissions survive. Agent forks require a stopped source and begin with fresh conversation storage; they never share a writable workspace or native backend session.
+- `caligo delete NAME` confirms before removing an attempt's working files and private state. Open shells and active agents prevent deletion. Submitted runs, routing, and conversation event history survive; deleting an attempt does not cancel experiments. Names may be reused after deletion.
 
 ## Configuration and host routing
 

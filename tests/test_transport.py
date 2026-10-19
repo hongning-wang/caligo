@@ -96,3 +96,11 @@ def test_project_snapshot_and_evidence_through_controller_api(
     assert base64.b64decode(tail["data"]) == b"experiment output\n"
     assert rpc("tail", run=run_id, offset=tail["offset"])["data"] == ""
     assert rpc("publish", run=run_id)["state"] == "PREPARED"
+
+    fork = rpc("fork", environment=attempt["id"], name="variant")
+    assert (Path(fork["workspace"]) / "src/model.py").read_text() == "edited after submission\n"
+    rpc("delete", environment=attempt["id"])
+    assert not workspace.exists()
+    assert rpc("logs", run=run_id) == {"logs": "experiment output\n"}
+    assert (directory / "inputs/src/model.py").read_text() == "edited before submission\n"
+    assert Path(fork["workspace"]).is_dir()

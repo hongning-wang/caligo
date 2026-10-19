@@ -113,11 +113,61 @@ class Project:
             write_json(self.state_path, state)
         return attempt
 
+    def fork(self, source, name):
+        valid_id(name)
+        with lock(self.directory / "state.lock"):
+            state = self.read()
+            if state["version"] != 3:
+                raise CaligoError("Legacy attempts require caligo migrate first")
+            original = self.find(source, state)
+            if any(name in (a["name"], a["id"]) for a in state["attempts"]):
+                raise CaligoError("Attempt already exists: " + name)
+            workflow = self.workflow(original["id"])
+            result = workflow.coding.rpc("fork", environment=original["id"], name=name)
+            result.update(
+                {
+                    key: original[key]
+                    for key in ("revision", "controller_project", "spec", "location")
+                    if key in original
+                }
+            )
+            state["attempts"].append(result)
+            state["active_attempt"] = result["id"]
+            write_json(self.state_path, state)
+        self._service_cache = {}
+        return result
+
+    def delete(self, name):
+        with lock(self.directory / "state.lock"):
+            state = self.read()
+            if state["version"] != 3:
+                raise CaligoError("Legacy attempts require caligo migrate first")
+            attempt = self.find(name, state)
+            result = self.workflow(attempt["id"]).coding.rpc(
+                "delete", environment=attempt["id"]
+            )
+            state["attempts"].remove(attempt)
+            # Retain routing and pinned specs so old runs remain discoverable,
+            # including runs submitted by agents on a remote coding host.
+            state.setdefault("deleted_attempts", []).append(attempt)
+            if state.get("active_attempt") == attempt["id"]:
+                state["active_attempt"] = (
+                    state["attempts"][-1]["id"] if state["attempts"] else None
+                )
+            write_json(self.state_path, state)
+        self._service_cache = {}
+        return result
+
     def workflow(self, attempt=None):
         from .workflow import Workflow
 
         state = self.read()
-        selected = self.find(attempt or state["active_attempt"], state)
+        selected_id = attempt or state.get("active_attempt")
+        selected = (
+            self.find(selected_id, state)
+            if selected_id
+            else (state.get("deleted_attempts", [{}])[-1])
+        )
         view = dict(state, spec=selected.get("spec", state["spec"]))
         if selected.get("controller_project"):
             view["controller_project"] = selected["controller_project"]
@@ -199,7 +249,7 @@ class Project:
         matches = [thread for thread in threads if thread["attempt"] == attempt["id"]]
         if not matches:
             raise CaligoError(
-                "No thread for this attempt; use caligo start " + name + " --goal TEXT"
+                "No thread for this attempt; use caligo agent start " + name + " --goal TEXT"
             )
         return matches[-1]
 

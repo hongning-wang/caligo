@@ -49,6 +49,22 @@ def session(controller, environment, agent, controls=True):
                             environment, request["argv"], emit
                         )
                     }
+                elif action in {"fork", "delete"}:
+                    if getattr(controller, "agent_scope", False):
+                        raise CaligoError("An agent is restricted to its own attempt")
+                    manager = getattr(controller, "project_manager", None)
+                    if manager is None:
+                        raise CaligoError(
+                            "Attempt management requires a project controller"
+                        )
+                    if action == "fork":
+                        result = manager.fork(request["source"], request["name"])
+                    else:
+                        if manager.find(request["name"])["id"] == environment:
+                            raise CaligoError(
+                                "Exit this attempt's shell before deleting it"
+                            )
+                        result = manager.delete(request["name"])
                 elif action in {"switch", "create"}:
                     if getattr(controller, "agent_scope", False):
                         raise CaligoError("An agent is restricted to its own attempt")
@@ -94,9 +110,11 @@ def session(controller, environment, agent, controls=True):
                         else:
                             log = path / "logs.txt"
                             result = {
-                                "logs": log.read_text(errors="replace")
-                                if log.exists()
-                                else ""
+                                "logs": (
+                                    log.read_text(errors="replace")
+                                    if log.exists()
+                                    else ""
+                                )
                             }
                     elif action == "artifacts":
                         self.wfile.write(b'{"ok": true}\n')
@@ -119,16 +137,16 @@ def session(controller, environment, agent, controls=True):
         client = directory / "bin/caligo"
         client.write_bytes(pkgutil.get_data("caligo", "sandbox_cli.py"))
         client.chmod(0o755)
-        (
-            directory / "bashrc"
-        ).write_text("""export PS1='caligo[${CALIGO_ATTEMPT}] \\w \\$ '
+        (directory / "bashrc").write_text(
+            """export PS1='caligo[${CALIGO_ATTEMPT}] \\w \\$ '
 caligo() {
   \"$CALIGO_CLIENT\" \"$@\"
   local result=$?
   if [ \"$result\" -eq 75 ]; then exit 0; fi
   return \"$result\"
 }
-""")
+"""
+        )
 
         class Server(socketserver.ThreadingUnixStreamServer):
             daemon_threads = True

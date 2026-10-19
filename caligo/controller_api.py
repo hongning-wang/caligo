@@ -27,6 +27,10 @@ def dispatch(controller, action, values, worker):
         )
     if action == "environment":
         return controller.environment(values["environment"])
+    if action == "fork":
+        return controller.fork(values["environment"], values["name"])
+    if action == "delete":
+        return controller.delete(values["environment"])
     if action == "snapshot":
         return controller.snapshot(values["environment"], values.get("script"))
     if action == "receive":

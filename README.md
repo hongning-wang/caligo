@@ -48,6 +48,25 @@ exit
 
 `caligo list` lists this project's attempts. Names are unique and existing attempts are never overwritten. Switching opens a fresh shell with persistent files. Each shell retains its own attempt association, even when other terminals select different attempts.
 
+Fork an attempt to try a variation from its current work, or delete an accidental attempt:
+
+```sh
+caligo fork baseline higher-dropout
+caligo switch higher-dropout
+caligo delete accidental-attempt
+# For scripts: caligo delete accidental-attempt --yes
+```
+
+Fork copies current working files (including dirty, untracked, and ignored files), file permissions, and independent Git history/index. It keeps the source's mode, add-ons, Git branch, pinned configuration, and evaluator revision, even if the project's current files have changed. The new attempt is selected but no shell or agent starts automatically. Inside an existing shell, that shell retains its attempt; use `switch` to enter the fork. Finish editing before forking; concurrent file changes cause an error.
+
+Agent forks start with fresh conversation storage and no copied agent home or outputs. Stop the source agent and wait for `STOPPED` before forking, then use `caligo agent start NEW_NAME --goal TEXT` on the fork.
+
+Deletion asks for confirmation; `--yes` skips the prompt. Exit an attempt's open shells and stop its agent before deleting it. Deletion removes working files, private Git metadata, agent home, and coding outputs. Submitted jobs, frozen inputs, logs, artifacts, evaluation results, and conversation event history are retained. Jobs continue until explicitly cancelled. A deleted name can be reused. Deleting the selected attempt selects the most recently created remaining attempt; deleting the last one leaves an empty project where run commands such as `status` and `artifacts` still work.
+
+Bare `caligo` and `caligo --help` show commands grouped into Attempts, Experiments, Agents, and Project & interface. Use `caligo help fork` or `caligo fork --help` for command options. `--project PATH` works before or after commands that select a project.
+
+Agent controls are bundled under `caligo agent`: use `caligo agent` to see them, or `caligo help agent start` for a particular command. The old flat agent commands remain accepted as hidden compatibility aliases. Attempt management and experiment commands stay at the top level.
+
 A human shell can read the normal host environment and use ordinary credentials. Its write policy protects the attempt's readable areas, existing read-only files, and workspace root. It also protects prepared evaluator files. Existing read-only files cannot be replaced through an editor's atomic save. Tools and editor servers launched from the shell inherit the boundary.
 
 File permissions and executable bits are preserved during checkout creation and transfer. Each attempt has independent Git metadata outside its declared working files. Ordinary Git commands work through `GIT_DIR` and `GIT_WORK_TREE`; commits and pushes remain explicit. No source repository history or origin remote is imported automatically.
@@ -73,14 +92,14 @@ Set credential values in the coding-host environment before the service starts; 
 ```sh
 caligo create search --mode agent --backend codex --goal "Improve validation accuracy"
 # Creation returns immediately after starting a persistent thread.
-caligo attach search
+caligo agent attach search
 # Ctrl-C detaches; the agent keeps running.
-caligo steer search "Focus on regularization next"
-caligo steer search --delivery steer "Keep the current change small" # Codex active steering
-caligo interrupt search "Investigate possible data leakage first"
-caligo pause search
-caligo resume search
-caligo stop search
+caligo agent steer search "Focus on regularization next"
+caligo agent steer search --delivery steer "Keep the current change small" # Codex active steering
+caligo agent interrupt search "Investigate possible data leakage first"
+caligo agent pause search
+caligo agent resume search
+caligo agent stop search
 ```
 
 Use `--backend claude` for Claude Code. Ordinary steering is queued for the next turn; Codex additionally supports active steering. Claude supports queued input and interruption. Unsupported controls return an error. Interruption may wait for the backend to finish stopping its tools; resume once the pause has been applied.
@@ -90,11 +109,11 @@ Agents review their objective against changes, checks, and experiment results be
 Continuous threads request a review if the agent omits one, then pause if it still does not provide a decision. After 20 automatic turns they pause for a human progress check; `resume` allows another 20. Sending an instruction also resets this count. `--once` disables automatic continuation; the thread stays available for instructions and experiment results unless the agent explicitly completes it. Transient runtime disconnects retry with backoff, up to five restarts. Other runtime/backend errors become visible in the thread state and event stream. Correct the cause and use `resume`, or start another thread after completion:
 
 ```sh
-caligo start search --backend codex --goal "Try another approach" --once
-caligo threads search
-caligo attach search --json
-caligo attach search --after 123 --no-follow
-caligo steer search --id instruction-42 "Run the comparison"
+caligo agent start search --backend codex --goal "Try another approach" --once
+caligo agent threads search
+caligo agent attach search --json
+caligo agent attach search --after 123 --no-follow
+caligo agent steer search --id instruction-42 "Run the comparison"
 ```
 
 Message IDs support idempotent retries. The same ID with different content is rejected. After a crash, an instruction whose delivery cannot be confirmed is recorded as `DELIVERY_UNKNOWN` and is not blindly replayed.
@@ -122,9 +141,9 @@ Use `--project PATH` to select a manifest, `--port PORT` for a fixed address, or
 The service runs on the coding host independently of viewers:
 
 ```sh
-caligo service start search
-caligo service status search
-caligo service stop search
+caligo agent service start search
+caligo agent service status search
+caligo agent service stop search
 ```
 
 Stopping the service pauses its active threads. A subsequent `resume` starts the service if necessary and resumes the saved conversation. After an abrupt service crash, reconnecting starts recovery and reconciles orphaned containers. Configure OS service supervision separately if startup at host boot is required.
