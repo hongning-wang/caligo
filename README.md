@@ -1,0 +1,96 @@
+# Caligo
+
+Isolated research experiments, persistent Codex/Claude sessions, and Slurm jobs.
+Python 3.11+, Git, Docker, and tmux are required locally. Slurm targets need
+Apptainer and Python 3.6+. See [the configuration format](docs/DESIGN.md#configuration).
+
+## Install
+
+```sh
+uv tool install .
+# Or: pip install .
+```
+
+## Use
+
+From your research repository:
+
+```sh
+caligo init
+# Edit caligo.toml: base image, writable directories, SSH hosts, CPU/GPU requests.
+git add .
+git commit -m "Experiment baseline"
+caligo create experiment trial-1
+caligo goal trial-1 "Compare three learning rates, report validation scores, then stop."
+caligo auth trial-1 --agent codex
+caligo start trial-1 --agent codex
+caligo attach trial-1
+```
+
+Detach with **Ctrl-b d**; the agent keeps running. Reattach to the same native CLI
+conversation to steer it. `caligo goal trial-1 "revised task"` also sends an update
+to a running agent. `caligo stop trial-1` stops the agent, leaving submitted jobs
+alone. Use `--agent claude` for Claude Code. Authentication stays in the experiment's
+private home; `auth --import` copies only the selected CLI's file-based credentials.
+
+`coding_image` is shared by human shells and agents. The default `caligo-coding:local`
+builds automatically once from Node's Debian slim image, with Bash, Vim, tmux, Git,
+ripgrep, Python, Codex, and Claude Code. To build ahead of time: `caligo image build`.
+Use `caligo attach trial-1 --shell` for human mode. Tools live in the image;
+credentials and conversations live in each experiment's private home.
+
+`base_image` is the separate research environment for Slurm dev/run jobs; the
+starter uses `python:3.12-slim`. Custom coding images need Python 3.11+, Bash, and
+the agent CLIs you use. Core and evaluation code stay read-only; only configured
+experiment directories are editable. Humans review and integrate results.
+
+```sh
+caligo -e trial-1 dev python3 experiments/test.py
+caligo -e trial-1 run
+caligo -e trial-1 jobs
+caligo -e trial-1 logs JOB_ID
+caligo -e trial-1 cancel JOB_ID
+```
+
+Use `--no-wait` before a dev command or after `run` to submit and return immediately.
+Inside the sandbox, commands automatically target its experiment. Outside it,
+select `-e NAME` or work from the directory printed by `caligo path NAME`.
+Job artifacts and provenance stay under `.caligo/experiments/NAME/jobs/JOB_ID`.
+Logs are also copied to the configured destination: a local path, `SSH_ALIAS:/path`,
+or `s3://bucket/prefix` (requires an authenticated AWS CLI on the controller).
+Optional `datasets` maps names to absolute paths present on each host; they appear
+read-only at `/datasets/NAME` and are not copied into job snapshots.
+
+Set `coding` to an SSH alias to host worktrees and agent sessions remotely. Caligo
+mirrors committed admin history, deploys its Python package, and forwards commands
+over SSH. The coding host needs Python 3.11+, Git, tmux, and Apptainer; Python from
+a miniforge environment module is detected when necessary. Its SSH configuration
+must resolve other execution hosts. The coding host itself needs no SSH hop.
+
+Optional fields under `dev` and `run`: `partitions` (string array), `account`, `qos`,
+and `time` (Slurm strings). Without `partitions`, Caligo considers all partitions
+matching the requested hardware. Jobs use one node and one task with the requested
+CPUs/GPUs. Scratch uses the target's `CALIGO_SCRATCH`, `~/orcd/scratch` if available,
+or `~/.cache`. Coding and job images share a SIF cache per host, defaulting to
+`~/orcd/scratch/caligo/images` or `~/.cache/caligo/images`; `CALIGO_IMAGE_CACHE`
+overrides it. Image hashes are recorded. The bundled coding image builds with
+Apptainer fakeroot on remote coding hosts; registry coding images are pulled.
+
+Configuration requires both image fields. Commit configuration before creating
+an experiment; existing experiments retain their recorded configuration.
+
+## Verify
+
+```sh
+python3 -m unittest -v
+CALIGO_TEST_DOCKER=1 python3 -m unittest -v tests.test_caligo.DockerIntegrationTest
+python3 -m tests.integration_orcd orcd  # Opt-in: submits a short CPU job.
+python3 -m tests.integration_coding orcd  # Opt-in: remote coding/session workflow.
+```
+
+Tests cover user workflows and isolation guarantees. Live tests require your own
+SSH access; they do not call a model or need model credentials.
+
+## License
+
+[MIT](LICENSE).

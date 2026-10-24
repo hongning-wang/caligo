@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "caligo"
+version = "0.1.0"
+description = "Isolated research experiments and Slurm jobs"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+caligo = "caligo.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["caligo*"]
+
+[tool.setuptools.package-data]
+caligo = ["coding/*"]

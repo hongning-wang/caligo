@@ -1,0 +1,12 @@
+Bootstrap: docker
+From: node:22-bookworm-slim
+
+%files
+    install.sh /opt/caligo-install.sh
+
+%post
+    sh /opt/caligo-install.sh
+    rm /opt/caligo-install.sh
+
+%environment
+    export SHELL=/bin/bash
