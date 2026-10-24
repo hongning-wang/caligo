@@ -1,5 +1,20 @@
 # Caligo
 
+Human-Written
+---
+Mostly vibecoded at this point, but driven by my goals and designs. The code quality of this codebase will improve over time.
+
+The TLDR is that ML is a very collaborative effort between humans and agents. However, rogue agents and human errors can easily lead to evaluation drift, reward hacking and method drift. Also  Slurm is weird. This repo is my attempt at starting to solve these issues for my personal use. Basically,
+
+- Humans write a base template for a project, with sufficient flexibility and capability to test and evaluate different methods. This step is up to human ingenuity. 
+- Each experiment is a git worktree. Agents or humans can attach to a worktree, which puts them inside a Docker container with basic shell tools. Agent sessions are essentially claude/codex /goal loops maintained inside tmux sessions, and can be steered through the regular cli.
+- Eval files are fixed as read only. Only certain files are modifiable to create more ``controlled'' experiments.
+- Slurm commands are abstracted away into dev (arbitrary execution) and run (run a fixed evaluation files).
+
+
+AI Written
+---
+
 Isolated research experiments, persistent Codex/Claude sessions, and Slurm jobs.
 Python 3.11+, Git, Docker, and tmux are required locally. Slurm targets need
 Apptainer and Python 3.6+. See [the configuration format](docs/DESIGN.md#configuration).
