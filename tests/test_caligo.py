@@ -7,9 +7,10 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from caligo import config, sandbox, sessions
-from caligo.util import Error, read_json, run
+from caligo.util import Error, read_json, run, write_json
 from caligo.workspace import Project
 
 
@@ -45,6 +46,99 @@ class ProjectFixture(unittest.TestCase):
 
 
 class WorkspaceTest(ProjectFixture):
+    def test_remote_retry_replaces_generated_config_and_preserves_experiments(self):
+        from caligo import cli, remote
+
+        # Reproduce an old failed attempt: init generated an untracked config
+        # in a remote mirror whose commit did not yet contain caligo.toml.
+        run(["git", "rm", "--cached", "caligo.toml"], cwd=self.root)
+        run(["git", "commit", "-m", "Before Caligo configuration"], cwd=self.root)
+        remote_root = self.project.state / "remote cache"
+        remote_root.mkdir()
+        repository = remote_root / "admin"
+        run(["git", "clone", self.root, repository])
+        remote_project = Project(repository)
+        remote_project.init()
+        marker = remote_project.state / "keep.txt"
+        marker.write_text("persistent controller state")
+
+        text = config.STARTER.replace('coding = "local"', 'coding = "cluster"')
+        (self.root / "caligo.toml").write_text(text)
+        self.commit()
+        write_json(self.project.state / "remote.json", {
+            "host": "cluster", "python": sys.executable, "root": str(remote_root),
+        })
+
+        # Exercise the actual bundle, shell commands, deployment and remote CLI
+        # locally, without requiring an SSH server or a container runtime.
+        with patch.object(remote, "SSH") as ssh_class, patch.object(
+            remote.subprocess, "call"
+        ) as call:
+            ssh = ssh_class.return_value
+            ssh.host, ssh.options = "cluster", []
+            ssh.command.side_effect = lambda script: run(["sh", "-c", script])
+            ssh.put.side_effect = shutil.copyfile
+            call.side_effect = lambda argv: run(["sh", "-c", argv[-1]]).returncode
+            argv = ["create", "experiment", "recovered"]
+            self.assertEqual(
+                remote.forward(self.project, cli.parser().parse_args(argv), argv), 0
+            )
+            first = remote_project.experiment("recovered")
+            self.assertEqual((first.worktree / "caligo.toml").read_text(), text)
+            result = first.worktree / "experiments/result.txt"
+            result.write_text("keep this experiment edit")
+            first.set_goal("Keep this goal")
+
+            (self.root / "core.py").write_text("VALUE = 2\n")
+            self.commit()
+            argv = ["create", "experiment", "next"]
+            self.assertEqual(
+                remote.forward(self.project, cli.parser().parse_args(argv), argv), 0
+            )
+        second = remote_project.experiment("next")
+        self.assertEqual((second.worktree / "core.py").read_text(), "VALUE = 2\n")
+        self.assertEqual((first.worktree / "core.py").read_text(), "VALUE = 1\n")
+        self.assertEqual(result.read_text(), "keep this experiment edit")
+        self.assertEqual(first.goal(), "Keep this goal")
+        self.assertEqual(marker.read_text(), "persistent controller state")
+        first.snapshot("job-preserved")
+
+    def test_missing_committed_config_explains_how_to_recover(self):
+        run(["git", "rm", "--cached", "caligo.toml"], cwd=self.root)
+        run(["git", "commit", "-m", "Remove configuration"], cwd=self.root)
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                if staged:
+                    run(["git", "add", "caligo.toml"], cwd=self.root)
+                result = self.cli("create", "experiment", "retry", check=False)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("git add caligo.toml", result.stderr)
+                self.assertIn('git commit -m "Add Caligo configuration"', result.stderr)
+                self.assertIn("Staging alone is not enough", result.stderr)
+                self.assertNotIn("fatal:", result.stderr)
+                self.assertFalse((self.project.state / "experiments/retry").exists())
+        self.commit()
+        self.cli("create", "experiment", "retry")
+        experiment = self.project.experiment("retry")
+        self.assertEqual(
+            (experiment.worktree / "caligo.toml").read_text(), config.STARTER
+        )
+        experiment.snapshot("job-recovered")
+
+    def test_missing_committed_config_fails_before_contacting_remote(self):
+        from caligo import cli, remote
+
+        run(["git", "rm", "--cached", "caligo.toml"], cwd=self.root)
+        run(["git", "commit", "-m", "Remove configuration"], cwd=self.root)
+        (self.root / "caligo.toml").write_text(
+            config.STARTER.replace('coding = "local"', 'coding = "cluster"')
+        )
+        argv = ["create", "experiment", "retry"]
+        with patch.object(remote, "SSH") as ssh:
+            with self.assertRaisesRegex(Error, "committed admin baseline"):
+                remote.forward(self.project, cli.parser().parse_args(argv), argv)
+            ssh.assert_not_called()
+
     def test_experiment_edits_do_not_change_the_admin_or_other_experiments(self):
         second = self.project.create("other")
         path = self.experiment.worktree / "experiments/config.json"

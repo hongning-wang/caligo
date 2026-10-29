@@ -93,6 +93,10 @@ Apptainer fakeroot on remote coding hosts; registry coding images are pulled.
 
 Configuration requires both image fields. Commit configuration before creating
 an experiment; existing experiments retain their recorded configuration.
+If creation reports that `caligo.toml` is missing from the committed admin baseline,
+run `git add caligo.toml` and `git commit -m "Add Caligo configuration"` from your
+research repository, then retry creation. An untracked or staged file is not yet
+part of the baseline.
 
 ## Verify
 

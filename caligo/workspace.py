@@ -148,6 +148,25 @@ class Project:
             "Select an experiment with --experiment NAME, or cd into its worktree."
         )
 
+    def baseline(self):
+        revision = run(
+            ["git", "rev-parse", "--verify", "HEAD"], cwd=self.root, check=False
+        )
+        if revision.returncode:
+            raise Error("Commit your admin baseline before creating an experiment.")
+        commit = revision.stdout.strip()
+        result = run(
+            ["git", "show", f"{commit}:caligo.toml"], cwd=self.root, check=False
+        )
+        if result.returncode:
+            raise Error(
+                "caligo.toml is missing from the committed admin baseline (HEAD). "
+                "From the admin repository, run `git add caligo.toml` and "
+                '`git commit -m "Add Caligo configuration"`, then retry '
+                "`caligo create experiment <name>`. Staging alone is not enough."
+            )
+        return commit, config.load(result.stdout)
+
     def create(self, name):
         identifier(name)
         if name == "admin":
@@ -156,14 +175,7 @@ class Project:
             location = self.state / "experiments" / name
             if location.exists():
                 raise Error(f"Experiment already exists: {name}")
-            revision = run(
-                ["git", "rev-parse", "--verify", "HEAD"], cwd=self.root, check=False
-            )
-            if revision.returncode:
-                raise Error("Commit your admin baseline before creating an experiment.")
-            commit = revision.stdout.strip()
-            text = run(["git", "show", f"{commit}:caligo.toml"], cwd=self.root).stdout
-            settings = config.load(text)
+            commit, settings = self.baseline()
             location.mkdir(parents=True)
             worktree = location / "worktree"
             try:

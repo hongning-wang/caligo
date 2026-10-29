@@ -15,6 +15,8 @@ def forward(project, args, argv):
     settings = config.load((project.root / "caligo.toml").read_text())
     if settings["coding"] == "local":
         return None
+    if args.action == "create":
+        commit, _ = project.baseline()
     ssh = SSH(settings["coding"])
     with locked(project.state / "remote.lock"):
         cached = read_json(project.state / "remote.json", {})
@@ -69,7 +71,6 @@ def forward(project, args, argv):
             )
             cached["code_id"] = code_id
         if args.action == "create":
-            commit = run(["git", "rev-parse", "HEAD"], cwd=project.root).stdout.strip()
             bundle = project.state / "admin.bundle"
             bundle.unlink(missing_ok=True)
             run(["git", "bundle", "create", bundle, "--all"], cwd=project.root)
@@ -77,20 +78,22 @@ def forward(project, args, argv):
             ssh.put(bundle, remote_bundle)
             repository = cached["root"] + "/admin"
             script = (
-                "if test -d " + shlex.quote(repository + "/.git") + "; then "
+                "set -e; if test -d " + shlex.quote(repository + "/.git") + "; then "
                 "git -C "
                 + shlex.quote(repository)
                 + " fetch "
                 + shlex.quote(remote_bundle)
                 + "; "
-                "else git clone "
+                "else git clone --no-checkout "
                 + shlex.quote(remote_bundle)
                 + " "
                 + shlex.quote(repository)
                 + "; fi; "
                 "git -C "
                 + shlex.quote(repository)
-                + " checkout --detach "
+                # This checkout is a controller-owned mirror. Replace leftover
+                # init files, while retaining .caligo and its experiment worktrees.
+                + " checkout --force --detach "
                 + shlex.quote(commit)
             )
             ssh.command(script)
