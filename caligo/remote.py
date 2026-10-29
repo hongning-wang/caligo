@@ -125,8 +125,17 @@ def forward(project, args, argv):
         "CALIGO_RUNTIME=apptainer",
     ]
     base = [*environment, cached["python"], "-m", "caligo", "--project", repository]
+    if args.action in ("login", "auth"):
+        # Login can precede the first experiment (and its Git mirror).
+        present = ssh.command(
+            "test -f " + shlex.quote(repository + "/caligo.toml"), check=False
+        )
+        if present.returncode:
+            ssh.command("mkdir -p " + shlex.quote(repository))
+            ssh.put(project.root / "caligo.toml", repository + "/caligo.toml")
+        ssh.command(shlex.join([*base, "init"]))
     if args.action == "create":
         ssh.command(shlex.join([*base, "init"]))
     command = shlex.join([*base, *forwarded])
-    tty = ["-tt"] if args.action in ("attach", "auth") else []
+    tty = ["-tt"] if args.action in ("attach", "auth", "login") else []
     return subprocess.call(["ssh", *ssh.options, *tty, ssh.host, command])

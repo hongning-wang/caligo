@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ from . import broker, sandbox
 from .util import (
     Error,
     locked,
+    private_parent,
     read_json,
     read_private,
     run,
@@ -37,40 +39,109 @@ def running(experiment):
     return run([*args, "has-session", "-t", name], check=False).returncode == 0
 
 
-def prompt(experiment):
+def prompt(experiment, goal=None):
     return (
         f"You are working on Caligo experiment {experiment.name}.\n"
-        f"Goal: {experiment.goal()}\n"
+        f"Goal: {experiment.goal() if goal is None else goal}\n"
         f"Editable repository directories: {', '.join(experiment.config['writable']) or 'none'}.\n"
         "Core code, evaluation and policy are fixed. Save artifacts to /outputs.\n"
         "Use caligo dev COMMAND [ARGS...] for Slurm tests and caligo run for final evaluation. "
         "Use caligo jobs, caligo logs JOB_ID, and caligo cancel JOB_ID to inspect your own jobs. "
         "Run commands in /workspace. Follow the goal's constraints and stopping conditions. "
-        "Report results with job IDs. Wait for human input when finished or blocked."
+        "Report results with job IDs and verify the requested outputs before declaring success.\n"
+        "Slurm work is asynchronous: submitting (including image preparation), queued, and running "
+        "are normal waiting states, even for long periods without logs. Keep the goal active "
+        "while waiting; silence or elapsed time alone is not a blocker or a reason to cancel. "
+        "Let caligo dev/run finish, or use --no-wait and then caligo logs JOB_ID, which waits "
+        "until the job finishes. If your command tool yields a running session, wait on that "
+        "session instead of ending the task. If the tool times out or disconnects, use caligo "
+        "jobs and reconnect with caligo logs JOB_ID; the submitted job continues independently. "
+        "For periodic checks, sleep 30 seconds between checks instead of busy-polling. "
+        "Continue the experiment when results arrive. Cancel only when the human requests it "
+        "or the goal's constraints or evidence require it, and confirm the terminal job state. "
+        "Ask for human input only for a concrete problem you cannot resolve within your permissions."
     )
 
 
-def authenticate(experiment, agent, *, import_auth=False):
-    broker.ensure(experiment)
-    backend = sandbox.prepare(experiment)
-    sandbox.require_agent(backend, agent)
-    if import_auth:
-        relative = (
-            ".codex/auth.json" if agent == "codex" else ".claude/.credentials.json"
-        )
-        source = Path.home() / relative
-        if not source.is_file():
-            raise Error(
-                f"No file-based {agent} credentials found; run caligo auth without --import."
+def wait_for_input(experiment, agent):
+    """Wait for the native composer before sending a slash command."""
+    args, name = tmux(experiment)
+    marker = "›" if agent == "codex" else "❯"
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and running(experiment):
+        pane = run([*args, "capture-pane", "-p", "-t", name]).stdout
+        for line in pane.splitlines():
+            line = line.lstrip()
+            # Startup menus also use an arrow, followed by a numbered choice.
+            if line.startswith(marker) and not line[1:].lstrip()[:1].isdigit():
+                return
+        time.sleep(0.1)
+    raise Error(
+        "Agent did not reach its input prompt; inspect "
+        + str(experiment.state / "session.log")
+        + " and attach to resolve any startup dialog. The goal has not been sent."
+    )
+
+
+def credential_path(agent):
+    return ".codex/auth.json" if agent == "codex" else ".claude/.credentials.json"
+
+
+def authenticate(project, agent, *, import_auth=False):
+    home = project.state / "auth/home"
+    home.mkdir(parents=True, exist_ok=True)
+    relative = credential_path(agent)
+    with locked(project.state / "auth/login.lock"):
+        if import_auth:
+            source = Path.home() / relative
+            if not source.is_file():
+                raise Error(
+                    f"No file-based {agent} credentials found; run caligo login {agent} without --import."
+                )
+            write_private(home, relative, source.read_bytes())
+            return 0
+        backend = sandbox.prepare_auth(project)
+        try:
+            sandbox.require_agent(backend, agent)
+            command = (
+                [
+                    "codex", "-c", 'cli_auth_credentials_store="file"',
+                    "login", "--device-auth",
+                ]
+                if agent == "codex"
+                else ["claude", "auth", "login"]
             )
-        write_private(experiment.state / "home", relative, source.read_bytes())
-        return 0
-    command = (
-        ["codex", "login", "--device-auth"]
-        if agent == "codex"
-        else ["claude", "auth", "login"]
-    )
-    return subprocess.call(backend.command(command, interactive=True))
+            return subprocess.call(backend.command(command, interactive=True))
+        finally:
+            backend.stop()
+
+
+def share_project_credentials(experiment, agent):
+    """Use the project login without sharing conversations or CLI settings."""
+    home = experiment.project.state / "auth/home"
+    if not home.exists():
+        return
+    relative = credential_path(agent)
+    with locked(experiment.project.state / "auth/login.lock"):
+        content = read_private(home, relative)
+        if content is None:
+            return
+        if agent == "claude":
+            # Claude replaces its credentials atomically, so keep a private copy.
+            write_private(experiment.state / "home", relative, content)
+            return
+        with private_parent(experiment.state / "home", relative) as (fd, name):
+            temporary = ".caligo-" + uuid.uuid4().hex
+            # Codex refreshes credentials in place. A hard link shares
+            # those writes without exposing the project home or other sessions.
+            os.link(home / relative, temporary, dst_dir_fd=fd, follow_symlinks=False)
+            try:
+                os.replace(temporary, name, src_dir_fd=fd, dst_dir_fd=fd)
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=fd)
+                except FileNotFoundError:
+                    pass
 
 
 def start(experiment, agent=None):
@@ -90,6 +161,7 @@ def start(experiment, agent=None):
         broker.ensure(experiment)
         backend = sandbox.prepare(experiment)
         sandbox.require_agent(backend, agent)
+        share_project_credentials(experiment, agent)
         if agent == "codex":
             content = (
                 read_private(experiment.state / "home", ".codex/config.toml") or b""
@@ -123,15 +195,14 @@ def start(experiment, agent=None):
                 json.dumps(preferences),
             )
         auth = (
-            [agent, "login", "status"]
+            [agent, "-c", 'cli_auth_credentials_store="file"', "login", "status"]
             if agent == "codex"
             else [agent, "auth", "status"]
         )
         if run(backend.command(auth), check=False).returncode:
             raise Error(
-                f"Authenticate first: caligo auth {experiment.name} --agent {agent}"
+                f"Authenticate first: caligo login {agent}"
             )
-        task = prompt(experiment)
         history = (
             experiment.state
             / "home"
@@ -145,6 +216,8 @@ def start(experiment, agent=None):
                 "--no-alt-screen",
                 "-c",
                 'projects."/workspace".trust_level="trusted"',
+                "-c",
+                'cli_auth_credentials_store="file"',
             ]
             if resume:
                 command += ["resume", "--last"]
@@ -152,7 +225,6 @@ def start(experiment, agent=None):
             command = [agent, "--permission-mode", "bypassPermissions"]
             if resume:
                 command += ["--continue"]
-        command += [task]
         args, name = tmux(experiment)
         launch = "exec " + shlex.join(backend.command(command, interactive=True))
         run([*args, "new-session", "-d", "-s", name, "-x", "120", "-y", "40", launch])
@@ -168,12 +240,8 @@ def start(experiment, agent=None):
         )
         state = {"agent": agent, "started": timestamp(), "goal": experiment.goal()}
         write_json(experiment.state / "session.json", state)
-        time.sleep(0.2)
-        if not running(experiment):
-            raise Error(
-                "Agent exited during startup; inspect "
-                + str(experiment.state / "session.log")
-            )
+        wait_for_input(experiment, agent)
+        steer(experiment, experiment.goal())
         return state
 
 
@@ -184,9 +252,13 @@ def steer(experiment, text):
     token = uuid.uuid4().hex
     run(
         [*args, "load-buffer", "-b", token, "-"],
-        input="Updated goal from the human:\n" + text,
+        input=prompt(experiment, text),
     )
+    # Keep the command outside the pasted body so large/multiline goals are
+    # recognized as slash commands by both native composers.
+    run([*args, "send-keys", "-t", name, "-l", "/goal "])
     run([*args, "paste-buffer", "-p", "-d", "-b", token, "-t", name])
+    time.sleep(0.2)
     run([*args, "send-keys", "-t", name, "Enter"])
     return True
 

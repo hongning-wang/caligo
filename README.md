@@ -35,24 +35,36 @@ caligo init
 # Edit caligo.toml: base image, writable directories, SSH hosts, CPU/GPU requests.
 git add .
 git commit -m "Experiment baseline"
+caligo login codex
 caligo create experiment trial-1
 caligo goal trial-1 "Compare three learning rates, report validation scores, then stop."
-caligo auth trial-1 --agent codex
 caligo start trial-1 --agent codex
 caligo attach trial-1
 ```
 
 Detach with **Ctrl-b d**; the agent keeps running. Reattach to the same native CLI
-conversation to steer it. `caligo goal trial-1 "revised task"` also sends an update
-to a running agent. `caligo stop trial-1` stops the agent, leaving submitted jobs
-alone. Use `--agent claude` for Claude Code. Authentication stays in the experiment's
-private home; `auth --import` copies only the selected CLI's file-based credentials.
+conversation to steer it. Caligo sets the objective using the native `/goal`
+command in both Codex and Claude Code. `caligo goal trial-1 "revised task"` sends
+a replacement `/goal` to a running agent. `caligo stop trial-1` stops the agent,
+leaving submitted jobs alone. Use `caligo login claude` and `--agent claude` for
+Claude Code.
+
+Log in once per project with `caligo login codex` or `caligo login claude`.
+Credentials stay under `.caligo/auth/home` on the coding host, outside worktrees
+and submitted snapshots. Each experiment keeps its own conversation, settings,
+and home. Codex sessions share the credential file so token refreshes stay in sync;
+Claude sessions receive a private credential copy at startup. After logging in
+again, restart agents to use the updated account. `caligo login codex --import`
+imports file-based credentials from the coding host's home instead of opening
+the login flow. `caligo auth --agent codex` and the older
+`caligo auth trial-1 --agent codex` spelling also save a project login.
 
 `coding_image` is shared by human shells and agents. The default `caligo-coding:local`
 builds automatically once from Node's Debian slim image, with Bash, Vim, tmux, Git,
 ripgrep, Python, Codex, and Claude Code. To build ahead of time: `caligo image build`.
 Use `caligo attach trial-1 --shell` for human mode. Tools live in the image;
-credentials and conversations live in each experiment's private home.
+conversations live in each experiment's private home. Project login uses the same
+image with an empty workspace and no datasets, so it can precede experiment creation.
 
 `base_image` is the separate research environment for Slurm dev/run jobs; the
 starter uses `python:3.12-slim`. Custom coding images need Python 3.11+, Bash, and
@@ -68,6 +80,11 @@ caligo -e trial-1 cancel JOB_ID
 ```
 
 Use `--no-wait` before a dev command or after `run` to submit and return immediately.
+`caligo logs JOB_ID` waits for completion, reporting state changes and a waiting
+status every 30 seconds without output. Image preparation and Slurm queue waits
+can take a long time; agents are instructed to keep waiting and continue from the
+results. If a command tool times out, reconnect to the same job with
+`caligo logs JOB_ID`. Ctrl-C disconnects the log follower without cancelling the job.
 Inside the sandbox, commands automatically target its experiment. Outside it,
 select `-e NAME` or work from the directory printed by `caligo path NAME`.
 Job artifacts and provenance stay under `.caligo/experiments/NAME/jobs/JOB_ID`.
@@ -75,6 +92,9 @@ Logs are also copied to the configured destination: a local path, `SSH_ALIAS:/pa
 or `s3://bucket/prefix` (requires an authenticated AWS CLI on the controller).
 Optional `datasets` maps names to absolute paths present on each host; they appear
 read-only at `/datasets/NAME` and are not copied into job snapshots.
+Set `coding_datasets = {}` before any TOML table to keep datasets on the Slurm
+hosts when coding locally. A `coding_datasets` table can instead specify local
+read-only mounts. If omitted, coding sessions use `datasets` as before.
 
 Set `coding` to an SSH alias to host worktrees and agent sessions remotely. Caligo
 mirrors committed admin history, deploys its Python package, and forwards commands

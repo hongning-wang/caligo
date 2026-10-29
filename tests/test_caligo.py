@@ -46,6 +46,37 @@ class ProjectFixture(unittest.TestCase):
 
 
 class WorkspaceTest(ProjectFixture):
+    def test_coding_datasets_override_preserves_job_datasets(self):
+        settings = config.load(
+            config.STARTER + '\n[datasets]\ntraining = "/remote/data"\n'
+        )
+        self.experiment.config = settings
+        with self.assertRaisesRegex(Error, "Dataset is unavailable"):
+            sandbox.mounts(self.experiment)
+        settings["coding_datasets"] = {}
+        self.assertFalse(
+            any(
+                target.startswith("/datasets/")
+                for _, target, _ in sandbox.mounts(self.experiment)
+            )
+        )
+        self.assertEqual(settings["datasets"], {"training": "/remote/data"})
+        dataset = self.root / "local-data"
+        dataset.mkdir()
+        settings["coding_datasets"] = {"training": str(dataset)}
+        self.assertIn(
+            (dataset, "/datasets/training", "ro"), sandbox.mounts(self.experiment)
+        )
+
+    def test_invalid_coding_dataset_paths_are_rejected(self):
+        for value in ('"relative"', '"/bad:path"', '"/bad,path"', "42"):
+            with self.subTest(value=value), self.assertRaises(Error):
+                config.load(
+                    config.STARTER + f"\n[coding_datasets]\ntraining = {value}\n"
+                )
+        with self.assertRaises(Error):
+            config.load("coding_datasets = []\n" + config.STARTER)
+
     def test_remote_retry_replaces_generated_config_and_preserves_experiments(self):
         from caligo import cli, remote
 
@@ -283,10 +314,10 @@ import json, os, sys, tty
 from pathlib import Path
 if 'login' in sys.argv:
     sys.exit(0)
-Path('/outputs/task.json').write_text(json.dumps(sys.argv[-1]))
+Path('/outputs/task.json').write_text(json.dumps(sys.argv))
 with open('/outputs/starts', 'a') as f: f.write('started\\n')
-print('ready', flush=True)
 tty.setraw(sys.stdin.fileno())
+print('› ', flush=True)
 data = b''
 while True:
     part = os.read(sys.stdin.fileno(), 4096)
@@ -303,7 +334,14 @@ while True:
             if task.exists():
                 break
             time.sleep(0.1)
-        self.assertIn(self.experiment.goal(), json.loads(task.read_text()))
+        self.assertNotIn(self.experiment.goal(), json.loads(task.read_text()))
+        steering = self.experiment.state / "outputs/steering.txt"
+        for _ in range(50):
+            if steering.exists() and self.experiment.goal() in steering.read_text():
+                break
+            time.sleep(0.1)
+        self.assertTrue(steering.read_text().startswith('/goal '))
+        self.assertIn(self.experiment.goal(), steering.read_text())
         self.cli("start", "trial", "--agent", "codex")
         self.assertEqual(
             (self.experiment.state / "outputs/starts").read_text().splitlines(),

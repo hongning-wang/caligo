@@ -15,6 +15,7 @@ Human users are trusted. Keep the implementation simple and readable.
 | `writable` | array of strings | Agent-editable repository directories; descendants inherit. |
 | `logs` | string | Local directory, remote directory, or bucket URI. |
 | `datasets` | optional table of strings | Dataset names mapped to absolute host paths; mounted read-only at `/datasets/<name>`. |
+| `coding_datasets` | optional table of strings | Override dataset mounts for coding sessions only; an empty table leaves datasets on execution hosts. Defaults to `datasets`. |
 | `dev.hosts` | array of strings | SSH config names for dev jobs. |
 | `dev.hardware.cpus` | positive integer | CPUs per dev job. |
 | `dev.hardware.gpus` | nonnegative integer | GPUs per dev job; zero means CPU-only. |
@@ -29,9 +30,10 @@ Dev and run also accept optional `partitions` (array of strings), `account`, `qo
 and `time` (Slurm strings). Resource counts apply to one node and one task.
 
 The coding image supplies Bash, Vim, tmux, Git, ripgrep, Python, Node, Codex, and
-Claude Code. Tools are installed once in the image; credentials and sessions stay
-private to each experiment. Docker shares image layers; Apptainer coding and job
-images use one cache per host, outside experiment directories. Dev/run use the
+Claude Code. Tools are installed once in the image; login is shared within a
+project and conversations stay private to each experiment. Docker shares image
+layers; Apptainer coding and job images use one cache per host, outside experiment
+directories. Dev/run use the
 separate base image. Record image digests and require matching host architectures.
 
 ## Experiments and sandboxing
@@ -78,10 +80,12 @@ use a shared Linux VM. Remote targets must support the required container isolat
 - `caligo goal <experiment> "<task>"` sets or revises the goal. Include constraints
   and stopping conditions, such as "compare three learning rates and report the
   best validation score." Caligo stores the goal outside the repository and
-  delivers revisions to the agent as conversation messages; changing a file alone
-  is insufficient. Record the current goal with each submitted job.
+  delivers it through the native `/goal` command in Codex or Claude Code, including
+  revisions and conversation resumes; changing a file alone is insufficient.
+  Record the current goal with each submitted job.
 - `caligo attach <experiment> --agent codex|claude` opens the agent's native
-  interactive terminal inside the sandbox. The goal becomes its initial task.
+  interactive terminal inside the sandbox. Caligo waits for the native input
+  prompt, then submits `/goal` with the objective and experiment instructions.
   Chat there to ask questions, inspect results, interrupt work, or change direction.
   Save steering messages alongside the goal as part of the experiment history.
   Start with this terminal experience; a custom chat UI is optional later.
@@ -100,8 +104,26 @@ use a shared Linux VM. Remote targets must support the required container isolat
   credentials and separate session state outside submitted snapshots. Unattended
   tasks may use the CLI's structured output. Agents outside the sandbox are outside
   Caligo's isolation boundary.
+- `caligo login codex|claude` authenticates once per project on the coding host,
+  using the coding image with an empty workspace and no dataset mounts. Store
+  credentials in `.caligo/auth/home`. At agent startup, hard-link the Codex
+  credential file into the experiment home so in-place token refreshes reach other
+  sessions. Claude replaces its credential file atomically, so copy its credentials
+  into the experiment instead. Conversations and CLI settings remain private.
+  Restart agents after re-login to use the updated account. Existing experiment-specific logins
+  still work when no project login is saved. `--import` reads file-based credentials
+  from the coding host's home. `caligo auth [experiment] --agent codex|claude`
+  remains a compatibility spelling for project login.
 - Keep task prompts concise: objective, constraints, and verification steps
   ([Codex prompting guide](https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide)).
+- Agents keep their goal active while Slurm jobs are submitting, queued, or running.
+  Image preparation and scheduling may take a long time without workload logs.
+  Follow the existing command session or reconnect with `caligo logs <job-id>`;
+  tool timeouts and quiet logs do not imply job failure. Log following reports
+  state changes and a waiting status every 30 seconds of silence. Agents continue
+  from job results and request human input only for a concrete problem they cannot
+  resolve within their permissions. Cancel only at the human's request or when
+  the task's constraints or evidence require it, and confirm a terminal job state.
 
 ## Commands
 
@@ -109,7 +131,8 @@ use a shared Linux VM. Remote targets must support the required container isolat
 caligo init                                  Create starter config; initialize Git if needed.
 caligo create experiment <name>               Create a worktree from the admin baseline.
 caligo goal <experiment> "<task>"              Set or revise its goal; notify its agent.
-caligo auth <experiment> --agent codex|claude  Authenticate inside its private home.
+caligo login codex|claude                     Authenticate once for the project.
+caligo auth --agent codex|claude              Compatibility spelling for project login.
 caligo start <experiment> --agent codex|claude Start working without attaching.
 caligo stop <experiment>                      Stop the agent; leave Slurm jobs running.
 caligo attach <experiment>                    Enter its sandbox shell; copy vimrc into its home.

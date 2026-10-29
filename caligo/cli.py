@@ -46,18 +46,34 @@ def parser():
         "image", help="build the shared coding image with editors and agent tools"
     )
     image.add_argument("operation", choices=["build"])
+    login = commands.add_parser("login", help="log in once for all project experiments")
+    login.add_argument("agent", choices=["codex", "claude"], nargs="?", default="codex")
+    login.add_argument(
+        "--import",
+        dest="import_auth",
+        action="store_true",
+        help="copy the selected CLI's file-based credentials from this host",
+    )
     descriptions = {
         "goal": "show, set, or revise an experiment's goal",
         "start": "start an agent detached",
         "attach": "open a human sandbox shell (--shell) or join an agent",
-        "auth": "authenticate an agent in its private home",
+        "auth": "log in once for all project experiments (alias for login)",
         "stop": "stop an agent",
         "status": "show agent and job status",
         "path": "print its worktree path",
     }
     for name, description in descriptions.items():
         command = commands.add_parser(name, help=description)
-        command.add_argument("name", metavar="EXPERIMENT", help="experiment name")
+        if name == "auth":
+            command.add_argument(
+                "name",
+                metavar="EXPERIMENT",
+                nargs="?",
+                help="accepted for compatibility; login applies to the whole project",
+            )
+        else:
+            command.add_argument("name", metavar="EXPERIMENT", help="experiment name")
         if name == "goal":
             command.description = (
                 "Omit TASK to show the current goal. Pass TASK to set or replace it.\n"
@@ -131,11 +147,25 @@ def parser():
 
 def follow(fetch, *, wait=True):
     offset = 0
+    last_status = None
+    last_output = time.monotonic()
     while True:
         result = fetch(offset)
+        now = time.monotonic()
         if result["text"]:
             sys.stdout.write(result["text"])
             sys.stdout.flush()
+            last_output = now
+        if wait and result["state"] not in jobs.TERMINAL:
+            if result["state"] != last_status or now - last_output >= 30:
+                print(
+                    f"caligo: {result['state']}; waiting for job completion "
+                    "(Ctrl-C disconnects without cancelling).",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                last_output = now
+            last_status = result["state"]
         previous, offset = offset, result["offset"]
         if not wait:
             if offset == previous:
@@ -213,6 +243,13 @@ def execute(args, argv):
                 f"{metadata['name']}\t{metadata['baseline'][:12]}\t{metadata['worktree']}"
             )
         return 0
+    if args.action in ("login", "auth"):
+        result = sessions.authenticate(
+            project, args.agent or "codex", import_auth=args.import_auth
+        )
+        if result == 0:
+            print(f"Project login saved for {args.agent or 'codex'}; available to all experiments.")
+        return result
     experiment = (
         project.experiment(args.name if hasattr(args, "name") else args.experiment)
         if hasattr(args, "name") or args.experiment
@@ -239,10 +276,6 @@ def execute(args, argv):
         )
     elif args.action == "attach":
         return sessions.attach(experiment, args.agent, shell=args.shell)
-    elif args.action == "auth":
-        return sessions.authenticate(
-            experiment, args.agent or "codex", import_auth=args.import_auth
-        )
     elif args.action == "stop":
         sessions.stop(experiment)
         print("Agent stopped. Submitted Slurm jobs continue independently.")

@@ -4,8 +4,9 @@ import hashlib
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
-from . import images
+from . import config, images
 from .util import Error, locked, read_json, read_private, run, write_json, write_private
 
 PACKAGE = Path(__file__).resolve().parent
@@ -41,7 +42,10 @@ def mounts(experiment):
         ):
             raise Error(f"Unsafe writable directory: {relative}")
         result.append((path, "/workspace/" + relative, "rw"))
-    for name, source in experiment.config.get("datasets", {}).items():
+    datasets = experiment.config.get(
+        "coding_datasets", experiment.config.get("datasets", {})
+    )
+    for name, source in datasets.items():
         if not Path(source).exists():
             raise Error(f"Dataset is unavailable on the coding host: {source}")
         result.append((Path(source), "/datasets/" + name, "ro"))
@@ -253,6 +257,28 @@ def prepare(experiment):
         )
     )
     return backend
+
+
+def prepare_auth(project):
+    """Use the coding image with an empty workspace and a project login home."""
+    state = project.state / "auth"
+    for relative in (
+        "home", "workspace", "outputs", "mailbox/requests", "mailbox/responses"
+    ):
+        (state / relative).mkdir(parents=True, exist_ok=True)
+    (state / "empty-git").touch()
+    (state / "workspace/.git").touch()
+    settings = config.load((project.root / "caligo.toml").read_text())
+    settings.update(writable=[], datasets={}, coding_datasets={})
+    # @ cannot occur in an experiment name, so the login container cannot collide.
+    context = SimpleNamespace(
+        project=project,
+        state=state,
+        name="@auth",
+        worktree=state / "workspace",
+        config=settings,
+    )
+    return prepare(context)
 
 
 def require_agent(backend, agent):

@@ -94,20 +94,26 @@ def load(text):
                         "GPU types must use letters, digits, underscores, or hyphens."
                     )
         strings(data["run"]["command"], "run.command")
-        datasets = data.setdefault("datasets", {})
-        if not isinstance(datasets, dict):
-            raise Error("datasets must be a table of names and absolute host paths.")
-        for name, path in datasets.items():
-            if any(char in string(path, "datasets." + name) for char in ",:"):
-                raise Error("Dataset mount paths cannot contain commas or colons.")
-            if not name or not all(char.isalnum() or char in "_-" for char in name):
+        data.setdefault("datasets", {})
+        for field in ("datasets", "coding_datasets"):
+            if field not in data:
+                continue
+            datasets = data[field]
+            if not isinstance(datasets, dict):
                 raise Error(
-                    "Dataset names must use letters, digits, underscores, or hyphens."
+                    f"{field} must be a table of names and absolute host paths."
                 )
-            if not PurePosixPath(string(path, "datasets." + name)).is_absolute():
-                raise Error(
-                    "Dataset paths must be absolute paths available on each host."
-                )
+            for name, path in datasets.items():
+                if any(char in string(path, field + "." + name) for char in ",:"):
+                    raise Error("Dataset mount paths cannot contain commas or colons.")
+                if not name or not all(char.isalnum() or char in "_-" for char in name):
+                    raise Error(
+                        "Dataset names must use letters, digits, underscores, or hyphens."
+                    )
+                if not PurePosixPath(path).is_absolute():
+                    raise Error(
+                        "Dataset paths must be absolute paths available on each host."
+                    )
     except (KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
         raise Error(f"Invalid caligo.toml: {exc}") from exc
     return data
