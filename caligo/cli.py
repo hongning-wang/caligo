@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 
 from . import __version__, broker, jobs, sessions
-from .util import Error, read_json
+from .util import read_json
+from .errors import Error
 from .workspace import Project
 
 
@@ -248,7 +249,9 @@ def execute(args, argv):
             project, args.agent or "codex", import_auth=args.import_auth
         )
         if result == 0:
-            print(f"Project login saved for {args.agent or 'codex'}; available to all experiments.")
+            print(
+                f"Project login saved for {args.agent or 'codex'}; available to all experiments."
+            )
         return result
     experiment = (
         project.experiment(args.name if hasattr(args, "name") else args.experiment)

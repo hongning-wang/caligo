@@ -97,10 +97,10 @@ while True:
 
     def test_startup_dialog_does_not_receive_goal(self):
         with (
-            patch.object(sessions, "running", return_value=True),
-            patch.object(sessions, "run", return_value=Mock(stdout="Accept trust dialog?\n› 1. Yes")) as command,
-            patch.object(sessions.time, "monotonic", side_effect=[0, 0, 61]),
-            patch.object(sessions.time, "sleep"),
+            patch.object(sessions.terminal, "running", return_value=True),
+            patch.object(sessions.terminal, "run", return_value=Mock(stdout="Accept trust dialog?\n› 1. Yes")) as command,
+            patch.object(sessions.terminal.time, "monotonic", side_effect=[0, 0, 61]),
+            patch.object(sessions.terminal.time, "sleep"),
         ):
             with self.assertRaisesRegex(Error, "goal has not been sent"):
                 sessions.wait_for_input(self.experiment, "codex")

@@ -6,7 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .util import Error, run
+from .errors import Error
+from .process import run, interactive
 
 
 class SSH:
@@ -22,7 +23,7 @@ class SSH:
         if control:
             self.options += ["-o", f"ControlPath={control}"]
 
-    def command(self, script, *, input=None, timeout=120, check=True):
+    def script(self, script, *, input=None, timeout=120, check=True):
         if self.local:
             return run(
                 ["bash", "-lc", script], input=input, timeout=timeout, check=check
@@ -32,6 +33,21 @@ class SSH:
             input=input,
             timeout=timeout,
             check=check,
+        )
+
+    # Preserve the original transport API for existing integrations.
+    command = script
+
+    def run(self, args, **kwargs):
+        """Execute literal arguments; shell quoting belongs at this boundary."""
+        return self.script(shlex.join([str(arg) for arg in args]), **kwargs)
+
+    def interactive(self, args, *, tty=False):
+        command = shlex.join([str(arg) for arg in args])
+        if self.local:
+            return interactive(["bash", "-lc", command])
+        return interactive(
+            ["ssh", *self.options, *(["-tt"] if tty else []), self.host, command]
         )
 
     def put(self, local, remote):

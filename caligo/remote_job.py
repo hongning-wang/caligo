@@ -17,8 +17,10 @@ from pathlib import Path
 
 if __package__:
     from .image_cache import ensure_sif
+    from .apptainer import exec_args, clean_environment
 else:
     from image_cache import ensure_sif
+    from apptainer import exec_args, clean_environment
 
 
 def write(path, value):
@@ -162,19 +164,7 @@ def execute(root, spec):
         time.sleep(0.5)
     if not read(root / "decision.json").get("run"):
         return 0
-    args = [
-        "apptainer",
-        "exec",
-        "--containall",
-        "--cleanenv",
-        "--no-privs",
-        "--no-eval",
-        "--no-mount",
-        "cwd,hostfs,bind-paths",
-        "--pwd",
-        "/workspace",
-        "--home",
-        str(root / "home") + ":/home/worker",
+    args = exec_args(root / "home") + [
         "--workdir",
         str(root / "temporary"),
         "--bind",
@@ -198,19 +188,7 @@ def execute(root, spec):
                 "--env",
                 "CUDA_VISIBLE_DEVICES=" + os.environ["CUDA_VISIBLE_DEVICES"],
             ]
-    env = dict(os.environ)
-    for key in list(env):
-        if key.startswith(
-            (
-                "APPTAINER_BIND",
-                "APPTAINER_MOUNT",
-                "SINGULARITY_BIND",
-                "SINGULARITY_MOUNT",
-                "APPTAINERENV_",
-                "SINGULARITYENV_",
-            )
-        ):
-            del env[key]
+    env = clean_environment(os.environ)
     started = time.time()
     try:
         code = subprocess.call(args + [spec["image"]] + spec["command"], env=env)

@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import shlex
 import signal
 import sys
 import unittest
@@ -153,20 +154,20 @@ class ProjectLoginTest(ProjectFixture):
         with (
             patch.dict(os.environ, HOME=str(host_home)),
             patch.object(remote, "SSH") as ssh_class,
-            patch.object(remote.subprocess, "call") as call,
         ):
             ssh = ssh_class.return_value
             ssh.host, ssh.options = "cluster", []
-            ssh.command.side_effect = lambda script, **kwargs: run(
+            ssh.script.side_effect = lambda script, **kwargs: run(
                 ["sh", "-c", script], **kwargs
             )
+            ssh.run.side_effect = lambda argv, **kwargs: ssh.script(shlex.join(argv), **kwargs)
             ssh.put.side_effect = shutil.copyfile
-            call.side_effect = lambda argv: run(["sh", "-c", argv[-1]]).returncode
+            ssh.interactive.side_effect = lambda argv, **kwargs: run(argv).returncode
             argv = ["login", "codex", "--import"]
             self.assertEqual(
                 remote.forward(self.project, cli.parser().parse_args(argv), argv), 0
             )
-            self.assertIn("-tt", call.call_args.args[0])
+            self.assertTrue(ssh.interactive.call_args.kwargs["tty"])
             remote_project = Project(remote_root / "admin")
             self.assertEqual(
                 read_private(remote_project.state / "auth/home", ".codex/auth.json"),
@@ -214,8 +215,8 @@ while os.read(sys.stdin.fileno(), 4096):
         try:
             # The test runner has no terminal; keep stdin without requesting a TTY.
             with patch.object(
-                sessions.subprocess,
-                "call",
+                sessions.auth,
+                "interactive",
                 side_effect=lambda argv: (
                     run(["-i" if arg == "-it" else arg for arg in argv]).returncode
                 ),

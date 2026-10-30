@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import shlex
 import signal
 import sys
 import tempfile
@@ -102,14 +103,13 @@ class WorkspaceTest(ProjectFixture):
 
         # Exercise the actual bundle, shell commands, deployment and remote CLI
         # locally, without requiring an SSH server or a container runtime.
-        with patch.object(remote, "SSH") as ssh_class, patch.object(
-            remote.subprocess, "call"
-        ) as call:
+        with patch.object(remote, "SSH") as ssh_class:
             ssh = ssh_class.return_value
             ssh.host, ssh.options = "cluster", []
-            ssh.command.side_effect = lambda script: run(["sh", "-c", script])
+            ssh.script.side_effect = lambda script: run(["sh", "-c", script])
+            ssh.run.side_effect = lambda argv, **kwargs: ssh.script(shlex.join(argv), **kwargs)
             ssh.put.side_effect = shutil.copyfile
-            call.side_effect = lambda argv: run(["sh", "-c", argv[-1]]).returncode
+            ssh.interactive.side_effect = lambda argv, **kwargs: run(argv).returncode
             argv = ["create", "experiment", "recovered"]
             self.assertEqual(
                 remote.forward(self.project, cli.parser().parse_args(argv), argv), 0

@@ -13,7 +13,9 @@ import time
 import uuid
 from pathlib import Path
 
-from .util import Error, detached, locked, read_json, write_json
+from .util import locked, read_json, write_json
+from .process import detached
+from .errors import Error
 
 
 def request(operation, *, timeout=60, **arguments):

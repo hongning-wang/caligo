@@ -3,7 +3,7 @@
 import tomllib
 from pathlib import PurePosixPath
 
-from .util import Error
+from .errors import Error
 
 STARTER = """# Research jobs use base_image; human and agent sessions use coding_image.
 base_image = "python:3.12-slim"

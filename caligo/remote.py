@@ -2,13 +2,14 @@
 
 import hashlib
 import shlex
-import subprocess
 import tarfile
 from pathlib import Path
 
 from . import config
 from .transport import SSH
-from .util import Error, locked, read_json, run, write_json
+from .util import locked, read_json, write_json
+from .process import run
+from .errors import Error
 
 
 def forward(project, args, argv):
@@ -27,9 +28,9 @@ def forward(project, args, argv):
                 "$p -c 'import sys; sys.exit(sys.version_info < (3,11))' 2>/dev/null && "
                 "{ command -v $p; break; }; done"
             )
-            python = ssh.command(probe, check=False).stdout.strip()
+            python = ssh.script(probe, check=False).stdout.strip()
             if not python:
-                python = ssh.command(
+                python = ssh.script(
                     "module load miniforge >/dev/null 2>&1 && "
                     "python3 -c 'import sys; assert sys.version_info >= (3,11); print(sys.executable)'",
                     check=False,
@@ -38,38 +39,14 @@ def forward(project, args, argv):
                 raise Error(
                     "Remote coding requires Python 3.11+ (or a miniforge environment module)."
                 )
-            home = ssh.command("printf '%s' \"$HOME\"").stdout
+            home = ssh.script("printf '%s' \"$HOME\"").stdout
             project_id = read_json(project.state / "project.json")["id"]
             cached = {
                 "host": ssh.host,
                 "python": python,
                 "root": home + "/.cache/caligo/projects/" + project_id,
             }
-        package = Path(__file__).resolve().parent
-        digest = hashlib.sha256()
-        sources = sorted([*package.glob("*.py"), *(package / "coding").glob("*")])
-        for path in sources:
-            digest.update(
-                path.relative_to(package).as_posix().encode() + path.read_bytes()
-            )
-        code_id = digest.hexdigest()[:16]
-        runtime = cached["root"] + "/.caligo-runtime/" + code_id
-        if cached.get("code_id") != code_id:
-            ssh.command("mkdir -p " + shlex.quote(runtime))
-            archive = project.state / "runtime.tar.gz"
-            with tarfile.open(archive, "w:gz") as output:
-                for path in sources:
-                    output.add(
-                        path, arcname="caligo/" + path.relative_to(package).as_posix()
-                    )
-            ssh.put(archive, runtime + "/runtime.tar.gz")
-            ssh.command(
-                "tar -xzf "
-                + shlex.quote(runtime + "/runtime.tar.gz")
-                + " -C "
-                + shlex.quote(runtime)
-            )
-            cached["code_id"] = code_id
+        runtime = deploy_runtime(project, ssh, cached)
         if args.action == "create":
             bundle = project.state / "admin.bundle"
             bundle.unlink(missing_ok=True)
@@ -96,7 +73,7 @@ def forward(project, args, argv):
                 + " checkout --force --detach "
                 + shlex.quote(commit)
             )
-            ssh.command(script)
+            ssh.script(script)
         repository = cached["root"] + "/admin"
         cached["repository"] = repository
         write_json(project.state / "remote.json", cached)
@@ -127,15 +104,43 @@ def forward(project, args, argv):
     base = [*environment, cached["python"], "-m", "caligo", "--project", repository]
     if args.action in ("login", "auth"):
         # Login can precede the first experiment (and its Git mirror).
-        present = ssh.command(
+        present = ssh.script(
             "test -f " + shlex.quote(repository + "/caligo.toml"), check=False
         )
         if present.returncode:
-            ssh.command("mkdir -p " + shlex.quote(repository))
+            ssh.script("mkdir -p " + shlex.quote(repository))
             ssh.put(project.root / "caligo.toml", repository + "/caligo.toml")
-        ssh.command(shlex.join([*base, "init"]))
+        ssh.run([*base, "init"])
     if args.action == "create":
-        ssh.command(shlex.join([*base, "init"]))
-    command = shlex.join([*base, *forwarded])
-    tty = ["-tt"] if args.action in ("attach", "auth", "login") else []
-    return subprocess.call(["ssh", *ssh.options, *tty, ssh.host, command])
+        ssh.run([*base, "init"])
+    return ssh.interactive(
+        [*base, *forwarded], tty=args.action in ("attach", "auth", "login")
+    )
+
+
+def deploy_runtime(project, ssh, cached):
+    """Upload the complete source package under its content identity."""
+    package = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    sources = sorted([*package.rglob("*.py"), *(package / "coding").glob("*")])
+    for path in sources:
+        digest.update(path.relative_to(package).as_posix().encode() + path.read_bytes())
+    code_id = digest.hexdigest()[:16]
+    runtime = cached["root"] + "/.caligo-runtime/" + code_id
+    if cached.get("code_id") != code_id:
+        ssh.script("mkdir -p " + shlex.quote(runtime))
+        archive = project.state / "runtime.tar.gz"
+        with tarfile.open(archive, "w:gz") as output:
+            for path in sources:
+                output.add(
+                    path, arcname="caligo/" + path.relative_to(package).as_posix()
+                )
+        ssh.put(archive, runtime + "/runtime.tar.gz")
+        ssh.script(
+            "tar -xzf "
+            + shlex.quote(runtime + "/runtime.tar.gz")
+            + " -C "
+            + shlex.quote(runtime)
+        )
+        cached["code_id"] = code_id
+    return runtime

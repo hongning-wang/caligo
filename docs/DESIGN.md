@@ -157,3 +157,34 @@ caligo attach lr-sweep --agent codex
 # Continue chatting in Codex: "Compare two learning rates instead; use the smaller model."
 # Detach and reattach later to continue the same conversation.
 ```
+
+## Code organization
+
+The CLI routes commands into three shallow packages:
+
+- `sessions`: lifecycle workflows in the package entry point; project login and
+  credential sharing in `auth`; native CLI configuration, launch arguments and
+  prompts in `agents`; private tmux operations in `terminal`.
+- `sandbox`: coding/login preparation in the package entry point; mount policy in
+  `mounts`; concrete Docker and Apptainer implementations; image management in
+  `images`. Coding recipes remain in `caligo/coding`.
+- `jobs`: snapshot staging and submission in `submission`; winner selection,
+  recovery and cancellation handling in `monitor`; log/artifact publishing in
+  `publishing`; persisted job access and watcher startup in `common`.
+
+`workspace` owns Git baselines, worktrees and validated snapshots. `broker` owns
+experiment-scoped mailbox requests. `process` provides captured, interactive and
+detached process execution; `util` owns file state, locking and safe private-home
+access. `transport.SSH.run` accepts literal arguments; `script` accepts shell
+source. Existing workflow imports and `SSH.command` remain available.
+
+The local controller can delegate coding to an SSH host. `remote` deploys all
+Python subpackages and coding assets under a content-derived runtime directory;
+remote coding requires Python 3.11+. Sandboxes mount the source package read-only.
+
+Slurm login and compute nodes receive only `remote_job.py`, `image_cache.py` and
+`apptainer.py`. These standalone modules use only the Python 3.6 standard library.
+The shared Apptainer helper owns isolation defaults and environment filtering;
+coding and workload runtimes keep their own mount and GPU policies. Changes to
+these helpers must preserve standalone imports and update their upload list when
+adding dependencies. No installation of Caligo on Slurm nodes is required.
